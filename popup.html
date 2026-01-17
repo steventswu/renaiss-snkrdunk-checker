@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SNKRDUNK Price Checker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>SNKRDUNK</h1>
+      <div class="status-badge" id="cardName">Detecting card...</div>
+    </header>
+
+    <main>
+      <div class="price-grid">
+        <div class="price-card" id="psa10-card">
+          <div class="label">PSA 10</div>
+          <div class="price" id="psa10-price">--</div>
+          <div class="trend" id="psa10-status">Searching...</div>
+        </div>
+        <div class="price-card" id="gradeA-card">
+          <div class="label">Grade A</div>
+          <div class="price" id="gradeA-price">--</div>
+          <div class="trend" id="gradeA-status">Searching...</div>
+        </div>
+      </div>
+
+      <div class="history-section">
+        <div class="section-header">
+          <div class="label">Last 3 Trades</div>
+          <div class="market-min" id="market-min">Min Market: --</div>
+        </div>
+        <div id="trade-history-list" class="history-list">
+          <div class="history-item loading">Loading history...</div>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <button id="viewOnSnkrdunk" class="primary-btn">View on SNKRDUNK</button>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+
+</html>

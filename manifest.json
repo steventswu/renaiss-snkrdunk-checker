@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "SNKRDUNK Price Checker",
+  "version": "1.0",
+  "description": "Check SNKRDUNK prices while browsing Renaiss.xyz",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.renaiss.xyz/*",
+    "*://*.snkrdunk.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.renaiss.xyz/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ]
+}
