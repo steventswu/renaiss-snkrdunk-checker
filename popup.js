@@ -176,13 +176,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 chrome.tabs.create({ url: `https://snkrdunk.com/en/trading-cards/${productId}?slide=right` });
             };
 
-            // Fetch MORE history (up to 100) to ensure we cover 15 days
-            const listingsUrl = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=100&page=1&sortType=latest&isOnlyOnSale=false`;
-            const listingsResp = await fetch(listingsUrl);
-            if (!listingsResp.ok) throw new Error("Listings API failed");
-            const listingsData = await listingsResp.json();
+            // Fetch recent history (2 pages of 50 to get 100 items, avoiding perPage=100 limit)
+            const p1Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=1&sortType=latest&isOnlyOnSale=false`;
+            const p2Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=2&sortType=latest&isOnlyOnSale=false`;
 
-            const listings = listingsData.usedTradingCards || [];
+            const [p1Resp, p2Resp] = await Promise.all([
+                fetch(p1Url),
+                fetch(p2Url)
+            ]);
+
+            if (!p1Resp.ok) throw new Error("Listings API failed");
+            // If page 2 fails (e.g. 404 for less than 50 items), we can ignore it or handle gracefully.
+            // SNKRDUNK returns 200 with empty array usually, unless page is out of bounds? 
+            // My curl test for page 2 worked. Let's assume it works or returns empty.
+
+            const p1Data = await p1Resp.json();
+            const p2Data = p2Resp.ok ? await p2Resp.json() : { usedTradingCards: [] };
+
+            const listings = (p1Data.usedTradingCards || []).concat(p2Data.usedTradingCards || []);
 
             let psa10Price = "N/A";
             let psa10Sales = [];
