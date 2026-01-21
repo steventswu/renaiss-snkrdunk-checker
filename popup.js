@@ -2,19 +2,15 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const cardNameEl = document.getElementById('cardName');
     const psa10PriceEl = document.getElementById('psa10-price');
-    const avgPriceEl = document.getElementById('avg-price'); // New element
+    const avgPriceEl = document.getElementById('avg-price');
     const psa10StatusEl = document.getElementById('psa10-status');
-    const avgStatusEl = document.getElementById('avg-status'); // New element
+    const avgStatusEl = document.getElementById('avg-status');
     const viewBtn = document.getElementById('viewOnSnkrdunk');
     const marketMinEl = document.getElementById('market-min');
     const historyListEl = document.getElementById('trade-history-list');
 
-    let currentTitle = "";
-
-    // 1. Get title from content script
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
         if (!tab || !tab.url || !tab.url.includes("renaiss.xyz")) {
             cardNameEl.textContent = "Navigate to Renaiss.xyz";
             psa10StatusEl.textContent = "Waiting for page...";
@@ -23,176 +19,212 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardTitle" });
-
         if (response && response.title) {
-            currentTitle = response.title;
-            cardNameEl.textContent = currentTitle;
-            searchSnkrdunk(currentTitle);
+            cardNameEl.textContent = response.title;
+            searchSnkrdunk(response.title);
         } else {
             cardNameEl.textContent = "Card not found";
         }
     } catch (error) {
-        console.error("Connection Error:", error);
-        if (error.message.includes("Could not establish connection")) {
-            cardNameEl.textContent = "Please refresh the page";
-            psa10StatusEl.textContent = "Extension link pending";
-            avgStatusEl.textContent = "Extension link pending";
-        } else {
-            cardNameEl.textContent = "Error detecting card";
-        }
+        console.error("Popup Init Error:", error);
+        cardNameEl.textContent = "Error detecting card";
     }
 
     function refineSearchQuery(title) {
-        console.log("Original Title:", title);
+        console.log("Analyzing Title:", title);
 
-        // 1. Noise Stripping
+        // 1. Noise Stripping (Grade/Condition)
         let cleaned = title.replace(/^(PSA\s*\d+|Gem\s*Mint|Mint|NM|Near\s*Mint|Excellent|Grader\s*PSA)\s+/gi, '');
-        cleaned = cleaned.replace(/\b(20\d{2}|19\d{2})\b/g, ''); // Remove years
-        // Remove common words
-        cleaned = cleaned.replace(/\b(Pokemon|Japanese|English|TCG|Promo|Card\s*Pack|Edition|Holo|Mirror\-Holo|R\-Holo|Base\s*Set)\b/gi, '');
-        cleaned = cleaned.replace(/\-/g, ' '); // Dashes to spaces
+        cleaned = cleaned.replace(/\b(Trading\s*Card\s*Game|TCG|Card\s*Pack|Edition)\b/gi, '');
 
-        // 2. Card Number Extraction
+        // 2. Metadata Extraction
+        const yearMatch = cleaned.match(/\b(20\d{2}|19\d{2})\b/);
+        const year = yearMatch ? yearMatch[0] : "";
+
+        const langMatch = cleaned.match(/\b(Japanese|English)\b/i);
+        const language = langMatch ? langMatch[0] : "";
+
         const idMatch = cleaned.match(/(#?\d+[\/\-]\d+|#\d+)/);
-        let cardNo = idMatch ? idMatch[0].replace('#', '') : "";
+        const fullId = idMatch ? idMatch[0] : "";
+        const idRaw = fullId.replace('#', '');
 
-        // 3. Set Mapping/Abbreviation
-        if (cleaned.toLowerCase().includes("25th anniversary")) {
-            cleaned = cleaned.replace(/25th\s+Anniversary/gi, '25th');
-        } else if (cleaned.toLowerCase().includes("20th anniversary")) {
-            cleaned = cleaned.replace(/20th\s+Anniversary/gi, '20th');
+        // 3. Robust Subject Identification
+        let subject = "";
+        if (fullId) {
+            const parts = cleaned.split(fullId);
+            if (parts.length > 1 && parts[1].trim()) {
+                // Name follows ID: "#001 Pikachu"
+                const following = parts[1].trim().split(/\s+/).filter(w => !w.startsWith('('));
+                subject = following[0] || "";
+            } else {
+                // Name precedes ID: "Pikachu #001"
+                const precedingParts = parts[0].trim().split(/\s+/).filter(w => !['Pokemon', 'Japanese', 'English', year].includes(w));
+                subject = precedingParts[precedingParts.length - 1] || "";
+            }
         }
 
-        // 4. Word Clean up
-        let remaining = cleaned.replace(idMatch ? idMatch[0] : "", '').trim();
-        const words = remaining.split(/\s+/).filter(w => w.length > 1);
+        // Fallback or secondary cleaning
+        if (!subject) {
+            const fallbackWords = cleaned.split(/\s+/).filter(w => w.length > 1 && !w.startsWith('('));
+            subject = fallbackWords[fallbackWords.length - 1] || "";
+        }
+
+        // 4. Lean Subject Cleaning (Remove -Holo, -Reverse, etc.)
+        const leanSubject = subject.replace(/[\-\–](Holo|Reverse|Mirror|Parallel|Non\s*Holo|Ex|VMAX|VSTAR|V)\b/gi, '').trim();
+
+        // 5. Construct Query Variants
+        // Smart Variant: [Year] Pokemon [Language] [FullId] [Subject]
+        const smartQuery = `${year} Pokemon ${language} ${fullId} ${subject}`.replace(/\s+/g, ' ').trim();
+
+        // Lean Variant: [Subject] [IdRaw] (e.g. Blastoise 003) - Highest reliability
+        const leanQuery = `${leanSubject} ${idRaw}`.trim();
+
+        // ID Only Variant: [IdRaw]
+        const idQuery = `${idRaw}`.trim();
+
+        console.log("Queries generated:", { smartQuery, leanQuery, idQuery });
 
         return {
-            words,
-            cardNo,
-            setMarker: (cleaned.toLowerCase().includes("25th") ? "25th" : (cleaned.toLowerCase().includes("20th") ? "20th" : ""))
+            idRaw,
+            subject: leanSubject, // Use the lean version for matching
+            smartQuery,
+            leanQuery,
+            idQuery,
+            fullCleaned: cleaned.trim(),
+            year,
+            language
         };
     }
 
-    // Helper: Calculate Trimmed Average (Remove top/bottom 10%)
     function calculateTrimmedAverage(sales) {
         if (!sales || sales.length === 0) return "N/A";
-
-        // Since API doesn't return dates for sold items in the list view,
-        // we use the fetched "latest" 100 items as our "recent" window.
-        // This is an approximation of the 15-day window for active cards.
-
-        // 1. Extract prices (remove currency symbols)
         const prices = sales.map(s => {
-            const p = s.price; // "US $123"
+            const p = s.price;
             return parseFloat(p.replace(/[^0-9.]/g, ''));
         }).filter(p => !isNaN(p));
-
         if (prices.length === 0) return "N/A";
-
-        // 2. Sort prices
         prices.sort((a, b) => a - b);
-
-        // 4. Trim Top/Bottom 10%
         const trimCount = Math.floor(prices.length * 0.10);
         const trimmedPrices = prices.slice(trimCount, prices.length - trimCount);
-
-        if (trimmedPrices.length === 0) return "N/A"; // Should not happen unless minimal data
-
-        // 5. Average
+        if (trimmedPrices.length === 0) return "N/A";
         const sum = trimmedPrices.reduce((acc, val) => acc + val, 0);
         const avg = sum / trimmedPrices.length;
-
         return `US $${Math.round(avg).toLocaleString()}`;
     }
 
-    async function searchSnkrdunk(title, stage = 0) {
-        const identity = (stage === 0) ? refineSearchQuery(title) : title;
+    async function searchSnkrdunk(title) {
+        const identity = refineSearchQuery(title);
 
-        if (stage === 0) {
-            psa10PriceEl.textContent = "...";
-            avgPriceEl.textContent = "...";
-            psa10StatusEl.textContent = "Searching...";
-            avgStatusEl.textContent = "Calculating...";
-            if (marketMinEl) marketMinEl.textContent = "Min Market: --";
-            if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
+        psa10PriceEl.textContent = "...";
+        avgPriceEl.textContent = "...";
+        psa10StatusEl.textContent = "Searching...";
+        avgStatusEl.textContent = "Calculating...";
+        if (marketMinEl) marketMinEl.textContent = "Min Market: --";
+        if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
+
+        // Parallel Fetch for the top 2 variants
+        const primaryQueries = [identity.leanQuery, identity.smartQuery].filter(q => q && q.length > 3);
+        const fallbackQueries = [identity.fullCleaned, identity.idQuery].filter(q => q && q.length > 2);
+
+        async function fetchProducts(query) {
+            console.log("-> Querying:", query);
+            const url = `https://snkrdunk.com/en/v1/search?keyword=${encodeURIComponent(query)}&perPage=20&page=1`;
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) return [];
+                const data = await resp.json();
+                return (data.products || []).concat(data.streetwears || []);
+            } catch (e) {
+                console.error("Fetch failed:", e);
+                return [];
+            }
         }
 
-        // Robust Multi-stage fallback search
-        let query = "";
-        const words = identity.words || [];
-        const last2 = words.slice(-2).join(' ');
-        const last1 = words.slice(-1).join(' ');
+        function findBestMatch(products, ident) {
+            if (!products || products.length === 0) return null;
 
-        switch (stage) {
-            case 0: query = `${last2} ${identity.cardNo}`.trim(); break;
-            case 1: query = `${last1} ${identity.cardNo}`.trim(); break;
-            case 2: if (identity.setMarker) query = `${last2} ${identity.setMarker}`.trim(); break;
-            case 3: if (identity.setMarker) query = `${last1} ${identity.setMarker}`.trim(); break;
-            case 4: query = last2; break;
-            case 5: query = last1; break;
+            const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const targetNo = ident.idRaw ? norm(ident.idRaw) : null;
+            const targetSubj = ident.subject ? ident.subject.toLowerCase() : null;
+
+            // Priority 1: Contains BOTH ID and Subject
+            const best = products.find(p => {
+                const pname = p.name.toLowerCase();
+                return (targetNo && norm(pname).includes(targetNo)) &&
+                    (targetSubj && pname.includes(targetSubj));
+            });
+            if (best) return best;
+
+            // Priority 2: Contains exact Card Number
+            if (targetNo) {
+                const match = products.find(p => norm(p.name).includes(targetNo));
+                if (match) return match;
+            }
+
+            // Priority 3: Subject match on top result
+            if (targetSubj && products[0].name.toLowerCase().includes(targetSubj)) {
+                return products[0];
+            }
+
+            return null;
         }
 
-        if (!query || (stage > 0 && query === (stage === 1 ? (`${last2} ${identity.cardNo}`.trim()) : ""))) {
-            if (!query) return searchSnkrdunk(identity, stage + 1);
-        }
-
-        console.log(`[Stage ${stage}] Searching with query:`, query);
-
-        const apiSearchUrl = `https://snkrdunk.com/en/v1/search?keyword=${encodeURIComponent(query)}&perPage=20&page=1`;
-
-        const webSearchUrl = `https://snkrdunk.com/en/search/result?keyword=${encodeURIComponent(query)}`;
-        viewBtn.onclick = () => { chrome.tabs.create({ url: webSearchUrl }); };
+        let bestMatch = null;
+        let successfulQuery = "";
 
         try {
-            const searchResp = await fetch(apiSearchUrl);
-            if (!searchResp.ok) throw new Error("Search API failed");
-            const searchData = await searchResp.json();
-
-            const products = (searchData.products || []).concat(searchData.streetwears || []);
-
-            if (products.length === 0) {
-                if (stage < 5) {
-                    return searchSnkrdunk(identity, stage + 1);
+            // Stage 1: Parallel Primary Search
+            const primaryResults = await Promise.all(primaryQueries.map(fetchProducts));
+            for (let i = 0; i < primaryResults.length; i++) {
+                bestMatch = findBestMatch(primaryResults[i], identity);
+                if (bestMatch) {
+                    successfulQuery = primaryQueries[i];
+                    break;
                 }
+            }
+
+            // Stage 2: Sequential Fallback
+            if (!bestMatch) {
+                for (const q of fallbackQueries) {
+                    const results = await fetchProducts(q);
+                    bestMatch = findBestMatch(results, identity);
+                    if (bestMatch) {
+                        successfulQuery = q;
+                        break;
+                    }
+                }
+            }
+
+            if (!bestMatch) {
                 psa10PriceEl.textContent = "N/A";
                 avgPriceEl.textContent = "N/A";
-                psa10StatusEl.textContent = "No results";
-                avgStatusEl.textContent = "No results";
-                if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">No history found</div>';
+                psa10StatusEl.textContent = "No match found";
+                avgStatusEl.textContent = "No match found";
+                if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Check title or try manual search</div>';
+                const manualUrl = `https://snkrdunk.com/en/search/result?keyword=${encodeURIComponent(identity.leanQuery || "Pokemon")}`;
+                viewBtn.onclick = () => { chrome.tabs.create({ url: manualUrl }); };
                 return;
             }
 
-            const bestMatch = products[0];
             const productId = bestMatch.id;
-            const minPrice = bestMatch.minPrice;
-            console.log("Found product:", bestMatch.name, "ID:", productId, "MinPrice:", minPrice);
+            console.log("BEST MATCH:", bestMatch.name, "| VIA:", successfulQuery);
 
             if (marketMinEl) {
-                marketMinEl.textContent = `Min Market: ${bestMatch.minPriceFormat || ('$' + minPrice.toLocaleString())}`;
+                marketMinEl.textContent = `Min Market: ${bestMatch.minPriceFormat || ('$' + bestMatch.minPrice.toLocaleString())}`;
             }
 
             viewBtn.onclick = () => {
                 chrome.tabs.create({ url: `https://snkrdunk.com/en/trading-cards/${productId}?slide=right` });
             };
 
-            // Fetch recent history (2 pages of 50 to get 100 items, avoiding perPage=100 limit)
             const p1Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=1&sortType=latest&isOnlyOnSale=false`;
             const p2Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=2&sortType=latest&isOnlyOnSale=false`;
 
-            const [p1Resp, p2Resp] = await Promise.all([
-                fetch(p1Url),
-                fetch(p2Url)
-            ]);
-
+            const [p1Resp, p2Resp] = await Promise.all([fetch(p1Url), fetch(p2Url)]);
             if (!p1Resp.ok) throw new Error("Listings API failed");
-            // If page 2 fails (e.g. 404 for less than 50 items), we can ignore it or handle gracefully.
-            // SNKRDUNK returns 200 with empty array usually, unless page is out of bounds? 
-            // My curl test for page 2 worked. Let's assume it works or returns empty.
 
             const p1Data = await p1Resp.json();
             const p2Data = p2Resp.ok ? await p2Resp.json() : { usedTradingCards: [] };
-
             const listings = (p1Data.usedTradingCards || []).concat(p2Data.usedTradingCards || []);
 
             let psa10Price = "N/A";
@@ -202,50 +234,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             listings.forEach(listing => {
                 const condition = (listing.condition || "Used").toUpperCase();
                 const priceStr = listing.price || "N/A";
-                // Normalize "PSA 10" detection
                 const isPSA10 = condition.includes("PSA 10") || condition.includes("PSA10");
 
                 if (!listing.isSold) {
-                    // Active PSA 10 Price (take first/latest/cheapest? API sort is 'latest', usually we want cheapest but for now take latest active or loop to find min?
-                    // The API sortType=latest, so this is the most recently listed. 
-                    // Actually, usually users want the Lowest Ask. But this API endpoint is 'used-listings' list.
-                    // For active items, finding the lowest price is better.
                     if (isPSA10) {
-                        // Parse price to number to compare if we want min
                         const pVal = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
                         const currentMin = psa10Price === "N/A" ? Infinity : parseFloat(psa10Price.replace(/[^0-9.]/g, ''));
-
-                        if (pVal < currentMin) {
-                            psa10Price = priceStr;
-                        }
+                        if (pVal < currentMin) psa10Price = priceStr;
                     }
-                } else {
-                    // Sold History - STRICTLY PSA 10 for both Stats and Display as requested
-                    if (isPSA10) {
-                        psa10Sales.push(listing); // For average calc
-
-                        if (soldHistory.length < 3) {
-                            soldHistory.push({
-                                price: priceStr,
-                                grade: condition,
-                                status: "SOLD",
-                                date: listing.updatedAt // Keep date if needed
-                            });
-                        }
+                } else if (isPSA10) {
+                    psa10Sales.push(listing);
+                    if (soldHistory.length < 3) {
+                        soldHistory.push({ price: priceStr, grade: condition, status: "SOLD", date: listing.updatedAt });
                     }
                 }
             });
 
-            // Update Main Prices
             psa10PriceEl.textContent = psa10Price;
             psa10StatusEl.textContent = psa10Price !== "N/A" ? "Live Price" : "Not listed";
-
-            // Calculate 15-Day Trimmed Average (PSA 10 Only)
             const avgPrice = calculateTrimmedAverage(psa10Sales);
             avgPriceEl.textContent = avgPrice;
-            avgStatusEl.textContent = avgPrice !== "N/A" ? "15-Day Trimmed" : "Insufficient Data";
+            avgStatusEl.textContent = avgPrice !== "N/A" ? "Average Sold" : "No history";
 
-            // Update Trade History UI (PSA 10 Only)
             if (historyListEl) {
                 if (soldHistory.length > 0) {
                     historyListEl.innerHTML = soldHistory.map(item => `
@@ -261,10 +271,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
         } catch (error) {
-            console.error("API error:", error);
+            console.error("Search Workflow Failed:", error);
             psa10StatusEl.textContent = "Error";
             avgStatusEl.textContent = "Error";
-            if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Error loading data</div>';
         }
     }
 });

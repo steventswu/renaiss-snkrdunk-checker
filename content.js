@@ -3,16 +3,30 @@ console.log("SNKRDUNK Price Checker: Content script loaded.");
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getCardTitle") {
     // Selector based on research: h1.text-2xl.font-bold on marketplace pages
-    const titleElement = document.querySelector('h1') ||
-      document.querySelector('span.text-2xl.font-semibold.text-white') ||
-      document.querySelector('.text-2xl.font-semibold') ||
-      document.querySelector('[class*="text-2xl"][class*="font-bold"]');
+    const candidates = [
+      'h1',
+      'span.text-2xl.font-semibold.text-white',
+      '.text-2xl.font-semibold',
+      '[class*="text-2xl"][class*="font-bold"]'
+    ];
 
-    if (titleElement) {
-      const title = titleElement.textContent.trim();
-      // Clean up title if it contains "PSA 10 Gem Mint" etc for better SNKRDUNK search
-      // But let's send the full title and let popup.js handle the search refinement
-      sendResponse({ title: title });
+    let titleText = "";
+    for (const selector of candidates) {
+      const elements = Array.from(document.querySelectorAll(selector));
+      // Find the first visible one
+      const visible = elements.find(el => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
+      });
+
+      if (visible) {
+        titleText = visible.textContent.trim();
+        break;
+      }
+    }
+
+    if (titleText) {
+      sendResponse({ title: titleText });
     } else {
       sendResponse({ error: "Title not found" });
     }
