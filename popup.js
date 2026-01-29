@@ -27,7 +27,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     } catch (error) {
         console.error("Popup Init Error:", error);
-        cardNameEl.textContent = "Error detecting card";
+        if (error.message.includes("Could not establish connection")) {
+            cardNameEl.textContent = "Please refresh the page";
+        } else {
+            cardNameEl.textContent = "Error detecting card";
+        }
     }
 
     function refineSearchQuery(title) {
@@ -48,7 +52,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const fullId = idMatch ? idMatch[0] : "";
         const idRaw = fullId.replace('#', '');
 
-        // 3. Robust Subject Identification
+        // 3. Set Marker Extraction (e.g., SV8a, SV4a, S8a-P, etc.)
+        const setCodeMatch = cleaned.match(/\b(SV\d+[a-z]?|S\d+[a-z]?\-P|S\d+[a-z]?)\b/i);
+        const setMarker = setCodeMatch ? setCodeMatch[0].toUpperCase() : "";
+
+        // 4. Robust Subject Identification
         let subject = "";
         if (fullId) {
             const parts = cleaned.split(fullId);
@@ -58,7 +66,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 subject = following[0] || "";
             } else {
                 // Name precedes ID: "Pikachu #001"
-                const precedingParts = parts[0].trim().split(/\s+/).filter(w => !['Pokemon', 'Japanese', 'English', year].includes(w));
+                const precedingParts = parts[0].trim().split(/\s+/).filter(w => !['Pokemon', 'Japanese', 'English', year, setMarker].includes(w));
                 subject = precedingParts[precedingParts.length - 1] || "";
             }
         }
@@ -69,26 +77,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             subject = fallbackWords[fallbackWords.length - 1] || "";
         }
 
-        // 4. Lean Subject Cleaning (Remove -Holo, -Reverse, etc.)
+        // 5. Lean Subject Cleaning (Remove -Holo, -Reverse, etc.)
         const leanSubject = subject.replace(/[\-\–](Holo|Reverse|Mirror|Parallel|Non\s*Holo|Ex|VMAX|VSTAR|V)\b/gi, '').trim();
 
-        // 5. Construct Query Variants
-        // Smart Variant: [Year] Pokemon [Language] [FullId] [Subject]
+        // 6. Construct Query Variants
         const smartQuery = `${year} Pokemon ${language} ${fullId} ${subject}`.replace(/\s+/g, ' ').trim();
-
-        // Lean Variant: [Subject] [IdRaw] (e.g. Blastoise 003) - Highest reliability
         const leanQuery = `${leanSubject} ${idRaw}`.trim();
-
-        // ID Only Variant: [IdRaw]
+        const setQuery = `${setMarker} ${idRaw} ${leanSubject}`.trim(); // Add set-based query
         const idQuery = `${idRaw}`.trim();
 
-        console.log("Queries generated:", { smartQuery, leanQuery, idQuery });
+        console.log("Queries generated:", { smartQuery, leanQuery, setQuery, setMarker });
 
         return {
             idRaw,
             subject: leanSubject, // Use the lean version for matching
+            setMarker,
             smartQuery,
             leanQuery,
+            setQuery,
             idQuery,
             fullCleaned: cleaned.trim(),
             year,
@@ -122,8 +128,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (marketMinEl) marketMinEl.textContent = "Min Market: --";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
 
-        // Parallel Fetch for the top 2 variants
-        const primaryQueries = [identity.leanQuery, identity.smartQuery].filter(q => q && q.length > 3);
+        // Parallel Fetch for the top 3 variants
+        const primaryQueries = [identity.setQuery, identity.leanQuery, identity.smartQuery].filter(q => q && q.length > 3);
         const fallbackQueries = [identity.fullCleaned, identity.idQuery].filter(q => q && q.length > 2);
 
         async function fetchProducts(query) {
@@ -146,8 +152,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
             const targetNo = ident.idRaw ? norm(ident.idRaw) : null;
             const targetSubj = ident.subject ? ident.subject.toLowerCase() : null;
+            const targetSet = ident.setMarker ? ident.setMarker.toLowerCase() : null;
 
-            // Priority 1: Contains BOTH ID and Subject
+            // Priority 1: Match BOTH Set marker and Subject/ID
+            if (targetSet) {
+                const setMatch = products.find(p => {
+                    const pname = p.name.toLowerCase();
+                    return pname.includes(targetSet) &&
+                        (targetNo && norm(pname).includes(targetNo));
+                });
+                if (setMatch) return setMatch;
+            }
+
+            // Priority 2: Contains BOTH ID and Subject
             const best = products.find(p => {
                 const pname = p.name.toLowerCase();
                 return (targetNo && norm(pname).includes(targetNo)) &&
