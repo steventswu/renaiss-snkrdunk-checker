@@ -8,6 +8,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const viewBtn = document.getElementById('viewOnSnkrdunk');
     const marketMinEl = document.getElementById('market-min');
     const historyListEl = document.getElementById('trade-history-list');
+    const totalUnitsSoldEl = document.getElementById('total-units-sold');
+    const totalSoldStatusEl = document.getElementById('total-sold-status');
 
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -115,7 +117,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (trimmedPrices.length === 0) return "N/A";
         const sum = trimmedPrices.reduce((acc, val) => acc + val, 0);
         const avg = sum / trimmedPrices.length;
-        return `US $${Math.round(avg).toLocaleString()}`;
+        return `$${Math.round(avg).toLocaleString()}`;
     }
 
     async function searchSnkrdunk(title) {
@@ -125,6 +127,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         avgPriceEl.textContent = "...";
         psa10StatusEl.textContent = "Searching...";
         avgStatusEl.textContent = "Calculating...";
+        if (totalUnitsSoldEl) totalUnitsSoldEl.textContent = "...";
+        if (totalSoldStatusEl) totalSoldStatusEl.textContent = "Calculating...";
         if (marketMinEl) marketMinEl.textContent = "Min Market: --";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
 
@@ -234,15 +238,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 chrome.tabs.create({ url: `https://snkrdunk.com/en/trading-cards/${productId}?slide=right` });
             };
 
-            const p1Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=1&sortType=latest&isOnlyOnSale=false`;
-            const p2Url = `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=2&sortType=latest&isOnlyOnSale=false`;
+            const urls = [
+                `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=1&sortType=latest&isOnlyOnSale=false`,
+                `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=2&sortType=latest&isOnlyOnSale=false`,
+                `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=3&sortType=latest&isOnlyOnSale=false`,
+                `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=4&sortType=latest&isOnlyOnSale=false`
+            ];
 
-            const [p1Resp, p2Resp] = await Promise.all([fetch(p1Url), fetch(p2Url)]);
-            if (!p1Resp.ok) throw new Error("Listings API failed");
-
-            const p1Data = await p1Resp.json();
-            const p2Data = p2Resp.ok ? await p2Resp.json() : { usedTradingCards: [] };
-            const listings = (p1Data.usedTradingCards || []).concat(p2Data.usedTradingCards || []);
+            const responses = await Promise.all(urls.map(url => fetch(url).catch(() => null)));
+            const dataResults = await Promise.all(responses.map(r => r && r.ok ? r.json() : { usedTradingCards: [] }));
+            const listings = dataResults.flatMap(d => d.usedTradingCards || []);
 
             let psa10Price = "N/A";
             let psa10Sales = [];
@@ -260,18 +265,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (pVal < currentMin) psa10Price = priceStr;
                     }
                 } else if (isPSA10) {
-                    psa10Sales.push(listing);
-                    if (soldHistory.length < 3) {
-                        soldHistory.push({ price: priceStr, grade: condition, status: "SOLD", date: listing.updatedAt });
+                    const updatedAt = listing.updatedAt || "";
+                    let isWithin30Days = true;
+                    if (updatedAt) {
+                        const soldDate = new Date(updatedAt);
+                        if (!isNaN(soldDate.getTime())) {
+                            const now = new Date();
+                            const diffDays = (now - soldDate) / (1000 * 60 * 60 * 24);
+                            isWithin30Days = diffDays <= 30;
+                        }
+                    }
+
+                    if (isWithin30Days) {
+                        psa10Sales.push(listing);
+                    }
+
+                    if (soldHistory.length < 5) {
+                        soldHistory.push({ price: priceStr, grade: condition, status: "SOLD", date: updatedAt });
                     }
                 }
             });
 
             psa10PriceEl.textContent = psa10Price;
             psa10StatusEl.textContent = psa10Price !== "N/A" ? "Live Price" : "Not listed";
+
             const avgPrice = calculateTrimmedAverage(psa10Sales);
             avgPriceEl.textContent = avgPrice;
             avgStatusEl.textContent = avgPrice !== "N/A" ? "Average Sold" : "No history";
+
+            if (totalUnitsSoldEl) {
+                totalUnitsSoldEl.textContent = psa10Sales.length.toString();
+                totalSoldStatusEl.textContent = "Units Sold";
+            }
 
             if (historyListEl) {
                 if (soldHistory.length > 0) {
