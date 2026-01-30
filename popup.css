@@ -64,6 +64,10 @@ h1 {
   margin-bottom: 28px;
 }
 
+#total-sold-card {
+  grid-column: span 2;
+}
+
 .price-card {
   background: var(--card-bg);
   backdrop-filter: blur(12px);

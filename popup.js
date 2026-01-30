@@ -117,7 +117,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (trimmedPrices.length === 0) return "N/A";
         const sum = trimmedPrices.reduce((acc, val) => acc + val, 0);
         const avg = sum / trimmedPrices.length;
-        return `$${Math.round(avg).toLocaleString()}`;
+        return `US $${Math.round(avg).toLocaleString()}`;
     }
 
     async function searchSnkrdunk(title) {
