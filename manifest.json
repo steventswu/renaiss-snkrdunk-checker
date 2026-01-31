@@ -12,8 +12,9 @@
     "*://*.renaiss.xyz/*",
     "*://*.snkrdunk.com/*"
   ],
-  "action": {
-    "default_popup": "popup.html"
+  "action": {},
+  "background": {
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
@@ -22,6 +23,18 @@
       ],
       "js": [
         "content.js"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "popup.html",
+        "popup.js",
+        "popup.css"
+      ],
+      "matches": [
+        "*://*.renaiss.xyz/*"
       ]
     }
   ]

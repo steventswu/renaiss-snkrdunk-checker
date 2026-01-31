@@ -11,14 +11,14 @@
 }
 
 body {
-  width: 400px;
+  width: 100%;
   height: auto;
   margin: 0;
   padding: 0;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background-color: var(--bg-color);
   color: var(--text-primary);
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 .container {
@@ -30,7 +30,14 @@ body {
 }
 
 header {
-  margin-bottom: 28px;
+  margin-bottom: 24px;
+}
+
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
 }
 
 h1 {
@@ -38,9 +45,27 @@ h1 {
   text-transform: uppercase;
   letter-spacing: 0.2em;
   color: var(--accent-color);
-  margin: 0 0 10px 0;
+  margin: 0;
   font-weight: 800;
   opacity: 0.8;
+}
+
+.close-icon {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+
+.close-icon:hover {
+  opacity: 1;
+  color: var(--error);
+  transform: scale(1.1);
 }
 
 .status-badge {
@@ -73,16 +98,19 @@ h1 {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 18px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .price-card:hover {
   transform: translateY(-4px);
-  border-color: var(--accent-color);
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.6);
 }
 
 .label {
@@ -90,19 +118,19 @@ h1 {
   color: var(--text-secondary);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 12px;
+  letter-spacing: 0.06em;
 }
 
 .price {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 800;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-variant-numeric: tabular-nums;
   background: linear-gradient(to bottom right, #fff, #94a3b8);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+  text-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .trend {
@@ -167,6 +195,150 @@ h1 {
   animation-delay: 0.1s;
 }
 
+.advanced-market-card {
+  background: var(--card-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 16px;
+  animation: fadeIn 0.5s ease-out 0.1s forwards;
+  opacity: 0;
+}
+
+#avg-price-card {
+  grid-column: span 1;
+  background: rgba(30, 41, 59, 0.4);
+}
+
+#total-sold-card {
+  grid-column: span 2;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.market-stats-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 0;
+}
+
+.stat-item.highlight {
+  border: none;
+  padding: 0;
+  text-align: left;
+}
+
+.stat-item.highlight .s-label {
+  display: none;
+  /* Already in card label */
+}
+
+.stat-item.highlight .s-val {
+  font-size: 24px;
+  font-weight: 800;
+  background: linear-gradient(to bottom right, #fff, #94a3b8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.market-stats-row .sub-stats {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stat-item:not(.highlight) {
+  flex: 1;
+  text-align: left;
+}
+
+.stat-item:not(.highlight) .s-label {
+  font-size: 8px;
+  opacity: 0.6;
+}
+
+.stat-item:not(.highlight) .s-val {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stat-item .trend {
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.stat-item .trend {
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.s-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.s-val {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.chart-container {
+  height: 120px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-area {
+  flex: 1;
+  position: relative;
+  min-height: 80px;
+}
+
+.months-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  padding: 0 5px;
+  font-weight: 600;
+}
+
+/* SVG Chart Elements */
+.chart-grid {
+  stroke: rgba(255, 255, 255, 0.05);
+  stroke-width: 1;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--accent-color);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 8px var(--glow));
+}
+
+.chart-bar {
+  fill: var(--glow);
+  opacity: 0.3;
+}
+
+.chart-point {
+  fill: var(--accent-color);
+  stroke: var(--bg-color);
+  stroke-width: 1.5;
+}
+
 /* History Section */
 .history-section {
   background: var(--card-bg);
@@ -181,21 +353,7 @@ h1 {
 }
 
 .section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 14px;
-}
-
-.market-min {
-  font-size: 10px;
-  color: var(--accent-color);
-  font-weight: 700;
-  background: rgba(56, 189, 248, 0.1);
-  padding: 3px 10px;
-  border-radius: 99px;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
 }
 
 .history-list {

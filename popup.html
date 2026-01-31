@@ -11,7 +11,10 @@
 <body>
   <div class="container">
     <header>
-      <h1>SNKRDUNK</h1>
+      <div class="header-top">
+        <h1>SNKRDUNK</h1>
+        <button id="closeModal" class="close-icon">&times;</button>
+      </div>
       <div class="status-badge" id="cardName">Detecting card...</div>
     </header>
 
@@ -22,22 +25,42 @@
           <div class="price" id="psa10-price">--</div>
           <div class="trend" id="psa10-status">Searching...</div>
         </div>
-        <div class="price-card" id="avg-price-card">
+        <div class="price-card full-width" id="avg-price-card">
           <div class="label">30-Day Avg (PSA 10)</div>
-          <div class="price" id="avg-price">--</div>
-          <div class="trend" id="avg-status">Calculating...</div>
+          <div class="market-stats-row">
+            <div class="stat-item highlight">
+              <span class="s-val" id="avg-val">--</span>
+            </div>
+            <div class="sub-stats">
+              <div class="stat-item">
+                <span class="s-label">High</span>
+                <span class="s-val" id="high-val">--</span>
+              </div>
+              <div class="stat-item">
+                <span class="s-label">Low</span>
+                <span class="s-val" id="low-val">--</span>
+              </div>
+            </div>
+          </div>
+          <div id="avg-price" style="display: none;">--</div>
         </div>
         <div class="price-card" id="total-sold-card">
-          <div class="label">Total Units Sold (30D)</div>
+          <div class="label">Units Sold (30D)</div>
           <div class="price" id="total-units-sold">--</div>
-          <div class="trend" id="total-sold-status">Calculating...</div>
+
+        </div>
+      </div>
+
+      <div class="advanced-market-card">
+        <div class="chart-container">
+          <div id="chart-area" class="chart-area"></div>
+          <div id="months-row" class="months-row"></div>
         </div>
       </div>
 
       <div class="history-section">
         <div class="section-header">
           <div class="label">Last 5 Trades</div>
-          <div class="market-min" id="market-min">Min Market: --</div>
         </div>
         <div id="trade-history-list" class="history-list">
           <div class="history-item loading">Loading history...</div>
