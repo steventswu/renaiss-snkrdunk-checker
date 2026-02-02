@@ -239,11 +239,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
-        // 1. Live Price (keep using listings)
+        // 1. Live Price - prioritize newest available listing (not sold)
         if (psa10Listings.length > 0) {
-            const latestSold = psa10Listings.find(l => l.isSold) || psa10Listings[0];
-            psa10PriceEl.textContent = latestSold.price || "N/A";
-            psa10StatusEl.textContent = latestSold.isSold ? "Latest Sale (Listings)" : "Live Listing";
+            const newestListing = psa10Listings.find(l => !l.isSold);
+            const latestSold = psa10Listings.find(l => l.isSold);
+
+            if (newestListing) {
+                psa10PriceEl.textContent = newestListing.price || "N/A";
+                psa10StatusEl.textContent = "Newest Listing";
+            } else if (latestSold) {
+                psa10PriceEl.textContent = latestSold.price || "N/A";
+                psa10StatusEl.textContent = "Latest Sale (Listings)";
+            } else {
+                psa10PriceEl.textContent = psa10Listings[0].price || "N/A";
+                psa10StatusEl.textContent = "Live Listing";
+            }
         } else if (history.length > 0) {
             // Fallback to history for price if no listings found (PSA 10 only)
             const psa10Only = history.filter(h => (h.condition || "").toUpperCase().includes("PSA 10"));
@@ -277,10 +287,35 @@ document.addEventListener('DOMContentLoaded', async () => {
             return date && date >= thirtyDaysAgo;
         });
 
-        // 3. Stats (High/Low/Avg) - Use HISTORY 30D
+        // 3. Stats (High/Low/Avg) - Use HISTORY 30D with OUTLIER FILTERING
         if (soldIn30.length > 0) {
-            const prices = soldIn30.map(h => parseFloat((h.price || "0").toString().replace(/[^0-9.]/g, ''))).filter(p => !isNaN(p));
-            if (prices.length > 0) {
+            const rawPrices = soldIn30.map(h => parseFloat((h.price || "0").toString().replace(/[^0-9.]/g, ''))).filter(p => !isNaN(p) && p > 0);
+
+            if (rawPrices.length > 0) {
+                // Calculate IQR for robust outlier detection
+                const sorted = [...rawPrices].sort((a, b) => a - b);
+                const q1Index = Math.floor(sorted.length * 0.25);
+                const q3Index = Math.floor(sorted.length * 0.75);
+                const q1 = sorted[q1Index];
+                const q3 = sorted[q3Index];
+                const iqr = q3 - q1;
+
+                // Filter outliers: exclude prices > Q3 + 1.5×IQR (standard statistical method)
+                const outlierThreshold = q3 + (iqr * 1.5);
+                const filteredPrices = rawPrices.filter(p => p <= outlierThreshold);
+
+                const outliers = rawPrices.filter(p => p > outlierThreshold);
+                console.log(`Outlier Threshold: $${Math.round(outlierThreshold)}`);
+                console.log(`Outliers: ${outliers.map(p => '$' + p).join(', ') || 'None'}`);
+
+                // Use filtered prices for stats (fallback to raw if all filtered out)
+                const prices = filteredPrices.length > 0 ? filteredPrices : rawPrices;
+                const outlierCount = rawPrices.length - filteredPrices.length;
+
+                if (outlierCount > 0) {
+                    console.log(`[OUTLIER] Filtered ${outlierCount} suspected bulk sales (threshold: $${Math.round(outlierThreshold)})`);
+                }
+
                 document.getElementById('high-val').textContent = `$${Math.round(Math.max(...prices)).toLocaleString()}`;
                 document.getElementById('low-val').textContent = `$${Math.round(Math.min(...prices)).toLocaleString()}`;
                 const avgVal = prices.reduce((a, b) => a + b, 0) / prices.length;
