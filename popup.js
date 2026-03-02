@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const psa10StatusEl = document.getElementById('psa10-status');
     const viewBtn = document.getElementById('viewOnSnkrdunk');
     const historyListEl = document.getElementById('trade-history-list');
+    const totalUnitsSoldEl = document.getElementById('total-units-sold');
     const psa10PopEl = document.getElementById('psa10-pop');
     const totalGradedPopEl = document.getElementById('total-graded-pop');
     const closeBtn = document.getElementById('closeModal');
@@ -325,6 +326,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const date = parseSnkrdunkDate(item.tradedAt);
             return date && date >= thirtyDaysAgo;
         });
+        if (totalUnitsSoldEl) {
+            totalUnitsSoldEl.textContent = soldIn30.length.toString();
+        }
 
         // 3. Stats (High/Low/Avg) - Use HISTORY 30D with OUTLIER FILTERING
         if (soldIn30.length > 0) {
@@ -617,6 +621,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('high-val').textContent = "--";
         document.getElementById('avg-val').textContent = "--";
         document.getElementById('low-val').textContent = "--";
+        if (totalUnitsSoldEl) totalUnitsSoldEl.textContent = "...";
         if (psa10PopEl) psa10PopEl.textContent = "...";
         if (totalGradedPopEl) totalGradedPopEl.textContent = "...";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
