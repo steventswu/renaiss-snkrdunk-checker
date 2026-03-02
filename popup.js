@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const psa10StatusEl = document.getElementById('psa10-status');
     const viewBtn = document.getElementById('viewOnSnkrdunk');
     const historyListEl = document.getElementById('trade-history-list');
-    const totalUnitsSoldEl = document.getElementById('total-units-sold');
-    const totalSoldStatusEl = document.getElementById('total-sold-status');
+    const psa10PopEl = document.getElementById('psa10-pop');
+    const totalGradedPopEl = document.getElementById('total-graded-pop');
     const closeBtn = document.getElementById('closeModal');
 
     if (closeBtn) {
@@ -23,10 +23,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             cardNameEl.textContent = "Navigate to Renaiss.xyz";
             return;
         }
-        const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardTitle" });
-        if (response && response.title) {
-            cardNameEl.textContent = response.title;
-            searchSnkrdunk(response.title);
+        const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
+        if (response && (response.rawTitle || response.name)) {
+            cardNameEl.textContent = response.name || response.rawTitle;
+            searchSnkrdunk(response);
         } else {
             cardNameEl.textContent = "Card not found";
         }
@@ -34,7 +34,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error("Popup Init Error:", error);
     }
 
-    function refineSearchQuery(title) {
+    function refineSearchQuery(metadata) {
+        // If we have structured metadata, use it to build a super precise query
+        if (metadata.name && metadata.number) {
+            const cleanName = metadata.name.replace(/Lv\.X/g, '').trim();
+            const setMarker = metadata.set || "";
+            const year = metadata.year || "";
+            const lang = metadata.language || "Japanese";
+
+            return {
+                idRaw: metadata.number.replace('#', '').trim(),
+                fullId: metadata.number,
+                subject: metadata.name,
+                setMarker: setMarker,
+                year: year,
+                language: lang,
+                // Primary query: Set + Number + Name
+                smartQuery: `${year} Pokemon ${lang} ${metadata.number} ${cleanName}`.replace(/\s+/g, ' ').trim(),
+                // Ultra Precise: Set + Number
+                preciseQuery: `${setMarker} ${metadata.number}`.trim(),
+                leanQuery: `${cleanName} ${metadata.number}`.trim(),
+                setQuery: `${setMarker} ${metadata.number}`.trim()
+            };
+        }
+
+        // Fallback to old parsing if metadata is incomplete
+        const title = metadata.rawTitle || "";
         let cleaned = title.replace(/\b(PSA|PSA10|Gem|Mint|Near|NearMint|Excellent|Grader|Authentic|CGC|BGS|10|9|8)\b/gi, '');
         cleaned = cleaned.replace(/\b(Trading\s*Card\s*Game|TCG|Card\s*Pack|Edition|Deck)\b/gi, '');
 
@@ -66,8 +91,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
-    async function searchSnkrdunk(title) {
-        const identity = refineSearchQuery(title);
+    async function searchSnkrdunk(metadata) {
+        const identity = refineSearchQuery(metadata);
         resetUI();
 
         async function fetchProducts(query) {
@@ -88,30 +113,41 @@ document.addEventListener('DOMContentLoaded', async () => {
             const targetNo = ident.idRaw ? ident.idRaw.replace(/[^A-Z0-9]/g, '') : "";
 
             if (targetNo) {
+                // Precise number matching
                 const idRegex = new RegExp(`(?<!\\d)${targetNo}(?!\\d)`);
                 if (idRegex.test(pname)) {
-                    score += 25;
+                    score += 40; // Increased weight for number
                     if (ident.idRaw.includes('/') && pname.includes(ident.idRaw)) score += 10;
                 } else if (normPname.includes(targetNo)) {
-                    score += 10;
+                    score += 15;
                 }
             }
-            if (ident.setMarker && pname.includes(ident.setMarker)) score += 20;
-            if (ident.year) {
-                if (pname.includes(ident.year)) score += 10;
-                else if (/\b(19|20)\d{2}\b/.test(pname)) score -= 30;
-            }
-            const subjWords = ident.subject.toUpperCase().split(/\s+/).filter(w => w.length > 3);
-            subjWords.forEach(w => { if (pname.includes(w)) score += 5; });
 
-            if (ident.subject.toUpperCase().includes('CLASSIC') && pname.includes('CLASSIC')) {
-                score += 15;
+            // Language score
+            if (ident.language && pname.includes(ident.language.toUpperCase())) score += 20;
+
+            if (ident.setMarker && pname.includes(ident.setMarker.toUpperCase())) score += 25;
+
+            if (ident.year) {
+                if (pname.includes(ident.year)) score += 15;
+                else if (/\b(19|20)\d{2}\b/.test(pname)) score -= 30; // Penalize different years
             }
+
+            const subjWords = ident.subject.toUpperCase().split(/\s+/).filter(w => w.length > 3);
+            subjWords.forEach(w => {
+                const cleanW = w.replace(/[^A-Z0-9]/g, '');
+                if (cleanW.length > 3 && pname.includes(cleanW)) score += 10;
+            });
+
+            if (ident.subject.toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
+                score += 20;
+            }
+
             return score;
         }
 
         // SPEED OPTIMIZATION: Run primary queries in parallel
-        const queries = [identity.setQuery, identity.leanQuery, identity.idRaw].filter(q => q && q.length >= 2);
+        const queries = [identity.preciseQuery, identity.smartQuery, identity.leanQuery, identity.idRaw].filter(q => q && q.length >= 2);
         const resultsArray = await Promise.all(queries.map(fetchProducts));
         let allProducts = resultsArray.flat();
 
@@ -227,6 +263,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const history = await fetchTradingHistory(productId);
             console.log("Fetched History:", history.length);
 
+            // New: Fetch population from Gemrate
+            fetchGemratePop(identity);
+
             processAndRenderData(listings, history);
         } catch (e) {
             console.error("Listing Fetch Error", e);
@@ -328,10 +367,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('low-val').textContent = "--";
             document.getElementById('avg-val').textContent = "--";
             avgPriceEl.textContent = "--";
-        }
-
-        if (totalUnitsSoldEl) {
-            totalUnitsSoldEl.textContent = soldIn30.length.toString();
         }
 
         // 4. History List
@@ -479,6 +514,102 @@ document.addEventListener('DOMContentLoaded', async () => {
         monthsRow.innerHTML = months.map(m => `<span>${m}</span>`).join('');
     }
 
+    async function fetchGemratePop(identity) {
+        if (!psa10PopEl || !totalGradedPopEl) return;
+
+        // Construct query: Include setMarker if available for better accuracy
+        const queryParts = [identity.year, "Pokemon", identity.language, identity.setMarker, identity.fullId, identity.subject];
+        const query = queryParts.filter(p => p && p.length > 0).join(' ').replace(/\s+/g, ' ').trim();
+
+        console.log(`[DEBUG] Fetching Pop from Gemrate for: ${query}`);
+
+        try {
+            // Step 1: Search for gemrate_id
+            const searchUrl = 'https://www.gemrate.com/universal-search-query';
+            const searchResp = await fetch(searchUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
+
+            if (!searchResp.ok) throw new Error('Gemrate search failed');
+            const searchData = await searchResp.json();
+
+            const results = Array.isArray(searchData) ? searchData : (searchData.results || []);
+            if (results.length === 0) {
+                psa10PopEl.textContent = "N/A";
+                totalGradedPopEl.textContent = "N/A";
+                return;
+            }
+
+            // Pick the best match
+            const bestMatch = results[0];
+            const gemrateId = bestMatch.gemrate_id;
+            console.log(`[DEBUG] Found Gemrate ID: ${gemrateId} from match: ${bestMatch.description}`);
+
+            // Step 2: Fetch the detail page HTML to get the Auth Token
+            const detailPageUrl = `https://www.gemrate.com/universal-search?gemrate_id=${gemrateId}`;
+            const detailPageResp = await fetch(detailPageUrl);
+            if (!detailPageResp.ok) throw new Error('Gemrate detail page fetch failed');
+            const detailHtml = await detailPageResp.text();
+
+            // Step 3: Extract the token from the HTML
+            // Look for: const cardDetailsToken = "..." or var cardDetailsToken = "..."
+            const tokenMatch = detailHtml.match(/(?:var|const)\s+cardDetailsToken\s*=\s*["']([^"']+)["']/);
+            const token = tokenMatch ? tokenMatch[1] : null;
+
+            if (!token) {
+                console.log("[DEBUG] Auth token not found in HTML, falling back to search data");
+                psa10PopEl.textContent = (bestMatch.total_population || "N/A").toLocaleString();
+                totalGradedPopEl.textContent = "N/A";
+                return;
+            }
+
+            // Step 4: Fetch the detail JSON using the token
+            const detailApiUrl = `https://www.gemrate.com/card-details?gemrate_id=${gemrateId}`;
+            const detailApiResp = await fetch(detailApiUrl, {
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Card-Details-Token': token
+                }
+            });
+
+            if (!detailApiResp.ok) throw new Error(`Gemrate API failed: ${detailApiResp.status}`);
+            const detailData = await detailApiResp.json();
+
+            // Step 5: Parse JSON for PSA data
+            const populationData = detailData.population_data || [];
+            // Find PSA entry (case-insensitive and robust)
+            const psaData = populationData.find(p =>
+                (p.grader || "").toUpperCase() === 'PSA' &&
+                !(p.grader || "").toUpperCase().includes('PSA/DNA')
+            );
+
+            if (psaData) {
+                const gemMintPop = psaData.grades ? (psaData.grades.g10 || "0") : "0";
+                psa10PopEl.textContent = Number(gemMintPop).toLocaleString();
+            } else if (detailData.combined_totals) {
+                const gemMintPop = detailData.combined_totals.total_gem_mint || "0";
+                psa10PopEl.textContent = Number(gemMintPop).toLocaleString();
+            } else {
+                psa10PopEl.textContent = (bestMatch.total_population || "N/A").toLocaleString();
+            }
+
+            const totalPop = detailData.total_population || (detailData.combined_totals ? detailData.combined_totals.total_population : null);
+            if (totalPop !== null) {
+                totalGradedPopEl.textContent = Number(totalPop).toLocaleString();
+                console.log(`[DEBUG] Pop data found: PSA10=${psa10PopEl.textContent}, Total=${totalGradedPopEl.textContent}`);
+            } else {
+                totalGradedPopEl.textContent = (bestMatch.total_population || "N/A").toLocaleString();
+            }
+
+        } catch (e) {
+            console.error("Gemrate Fetch Error:", e);
+            psa10PopEl.textContent = "Error";
+            totalGradedPopEl.textContent = "Error";
+        }
+    }
+
     function resetUI() {
         psa10PriceEl.textContent = "...";
         avgPriceEl.textContent = "...";
@@ -486,7 +617,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('high-val').textContent = "--";
         document.getElementById('avg-val').textContent = "--";
         document.getElementById('low-val').textContent = "--";
-        if (totalUnitsSoldEl) totalUnitsSoldEl.textContent = "...";
+        if (psa10PopEl) psa10PopEl.textContent = "...";
+        if (totalGradedPopEl) totalGradedPopEl.textContent = "...";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
     }
 

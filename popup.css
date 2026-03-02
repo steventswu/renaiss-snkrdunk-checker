@@ -89,8 +89,12 @@ h1 {
   margin-bottom: 28px;
 }
 
-#total-sold-card {
-  grid-column: span 2;
+#psa10-pop-card {
+  grid-column: span 1;
+}
+
+#total-pop-card {
+  grid-column: span 1;
 }
 
 .price-card {
@@ -212,8 +216,8 @@ h1 {
   background: rgba(30, 41, 59, 0.4);
 }
 
-#total-sold-card {
-  grid-column: span 2;
+#total-pop-card {
+  grid-column: span 1;
   background: rgba(255, 255, 255, 0.02);
 }
 

@@ -10,7 +10,8 @@
   ],
   "host_permissions": [
     "*://*.renaiss.xyz/*",
-    "*://*.snkrdunk.com/*"
+    "*://*.snkrdunk.com/*",
+    "*://*.gemrate.com/*"
   ],
   "action": {},
   "background": {
