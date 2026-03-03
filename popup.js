@@ -10,6 +10,72 @@ document.addEventListener('DOMContentLoaded', async () => {
     const psa10PopEl = document.getElementById('psa10-pop');
     const totalGradedPopEl = document.getElementById('total-graded-pop');
     const closeBtn = document.getElementById('closeModal');
+    const tabButtons = document.querySelectorAll('.tab-btn');
+
+    let appState = {
+        activeTab: 'snkrdunk',
+        snkrdunkData: {
+            listings: [],
+            history: []
+        },
+        priceChartingData: null,
+        identity: null
+    };
+
+    // Tab Switching Logic
+    tabButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.tab;
+            if (appState.activeTab === tab) return;
+
+            // Update UI state
+            tabButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            appState.activeTab = tab;
+
+            // Render existing data for the selected tab
+            renderTabContent();
+        });
+    });
+
+    function renderTabContent() {
+        if (appState.activeTab === 'snkrdunk') {
+            // Restore SNKRDUNK Labels
+            document.querySelector('#avg-price-card .label').textContent = "30-Day Avg (PSA 10)";
+            document.querySelector('#psa10-pop-card .label').textContent = "PSA 10 POP";
+            document.querySelector('#total-pop-card .label').textContent = "TOTAL GRADED";
+
+            // Restore High/Low labels
+            const subStats = document.querySelectorAll('.sub-stats .stat-item');
+            if (subStats.length >= 2) {
+                subStats[0].querySelector('.s-label').textContent = "High";
+                subStats[1].querySelector('.s-label').textContent = "Low";
+            }
+
+            // Show sections
+            document.querySelector('.advanced-market-card').style.display = 'block';
+            document.querySelector('.history-section').style.display = 'block';
+
+            if (appState.snkrdunkData.listings.length > 0 || appState.snkrdunkData.history.length > 0) {
+                processAndRenderData(appState.snkrdunkData.listings, appState.snkrdunkData.history);
+            } else {
+                resetUI();
+            }
+        } else if (appState.activeTab === 'pricecharting') {
+            // Update labels for PriceCharting
+            document.querySelector('#avg-price-card .label').textContent = "Market Values (USD)";
+            document.querySelector('#psa10-pop-card .label').textContent = "PSA 10";
+
+            if (appState.priceChartingData) {
+                renderPriceChartingData(appState.priceChartingData);
+            } else {
+                resetUI();
+                if (appState.identity) {
+                    fetchPriceChartingData(appState.identity);
+                }
+            }
+        }
+    }
 
     if (closeBtn) {
         closeBtn.onclick = () => {
@@ -27,7 +93,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
         if (response && (response.rawTitle || response.name)) {
             cardNameEl.textContent = response.name || response.rawTitle;
-            searchSnkrdunk(response);
+            appState.identity = refineSearchQuery(response);
+            searchSnkrdunk(appState.identity);
         } else {
             cardNameEl.textContent = "Card not found";
         }
@@ -92,8 +159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
-    async function searchSnkrdunk(metadata) {
-        const identity = refineSearchQuery(metadata);
+    async function searchSnkrdunk(identity) {
         resetUI();
 
         async function fetchProducts(query) {
@@ -267,11 +333,111 @@ document.addEventListener('DOMContentLoaded', async () => {
             // New: Fetch population from Gemrate
             fetchGemratePop(identity);
 
-            processAndRenderData(listings, history);
+            appState.snkrdunkData = { listings, history };
+            if (appState.activeTab === 'snkrdunk') {
+                processAndRenderData(listings, history);
+            }
         } catch (e) {
             console.error("Listing Fetch Error", e);
             handleNoMatch(identity);
         }
+    }
+
+    async function fetchPriceChartingData(identity) {
+        console.log("[DEBUG] Fetching PriceCharting Data for:", identity.smartQuery);
+
+        // Construct detailed search query
+        const query = `${identity.year} ${identity.subject} ${identity.idRaw} ${identity.language}`.replace(/\s+/g, ' ').trim();
+        const searchUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=videogames`;
+
+        try {
+            const resp = await fetch(searchUrl);
+            if (!resp.ok) throw new Error("PriceCharting search failed");
+            const html = await resp.text();
+
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            // Check if we landed on a search results page or a product page
+            const isProductPage = doc.getElementById('price_renderer');
+            let productDoc = doc;
+
+            if (!isProductPage) {
+                // Find best match in search results
+                const results = doc.querySelectorAll('#search-results tr');
+                if (results.length === 0) {
+                    handlePCNoMatch();
+                    return;
+                }
+
+                // For dry-run simplicity, pick first result. In prod, we should score it.
+                const firstLink = results[0].querySelector('a.title');
+                if (!firstLink) {
+                    handlePCNoMatch();
+                    return;
+                }
+
+                const productUrl = "https://www.pricecharting.com" + firstLink.getAttribute('href');
+                const productResp = await fetch(productUrl);
+                const productHtml = await productResp.text();
+                productDoc = parser.parseFromString(productHtml, 'text/html');
+            }
+
+            // Parse Prices
+            const getPrice = (id) => {
+                const el = productDoc.getElementById(id);
+                if (!el) return null;
+                const priceText = el.querySelector('.price')?.textContent || el.textContent;
+                return priceText.replace(/[^0-9.]/g, '').trim();
+            };
+
+            const data = {
+                ungraded: getPrice('ungraded_price'),
+                psa9: getPrice('grade_9_price'),
+                psa10: getPrice('psa_10_price'),
+                title: productDoc.querySelector('#product_name')?.textContent?.trim() || "Unknown Card"
+            };
+
+            appState.priceChartingData = data;
+            if (appState.activeTab === 'pricecharting') {
+                renderPriceChartingData(data);
+            }
+
+        } catch (e) {
+            console.error("PriceCharting Fetch Error:", e);
+            if (appState.activeTab === 'pricecharting') {
+                psa10PriceEl.textContent = "Error";
+            }
+        }
+    }
+
+    function renderPriceChartingData(data) {
+        psa10PriceEl.textContent = data.psa10 ? `$${data.psa10}` : "N/A";
+        psa10StatusEl.textContent = "PriceCharting PSA 10";
+
+        document.getElementById('avg-val').textContent = data.psa10 ? `$${data.psa10}` : "--";
+        document.getElementById('high-val').textContent = data.psa9 ? `$${data.psa9}` : "--";
+        document.getElementById('low-val').textContent = data.ungraded ? `$${data.ungraded}` : "--";
+
+        // Update labels for the mini-stats
+        const subStats = document.querySelectorAll('.sub-stats .stat-item');
+        if (subStats.length >= 2) {
+            subStats[0].querySelector('.s-label').textContent = "Grade 9";
+            subStats[1].querySelector('.s-label').textContent = "Ungraded";
+        }
+
+        // Hide chart and history as we don't have them for PC yet
+        document.querySelector('.advanced-market-card').style.display = 'none';
+        document.querySelector('.history-section').style.display = 'none';
+
+        const pcUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(data.title)}&type=videogames`;
+        viewBtn.textContent = "View on PriceCharting";
+        viewBtn.onclick = () => { chrome.tabs.create({ url: pcUrl }); };
+    }
+
+    function handlePCNoMatch() {
+        psa10PriceEl.textContent = "N/A";
+        psa10StatusEl.textContent = "No match on PriceCharting";
     }
 
     function processAndRenderData(listings, history = []) {
