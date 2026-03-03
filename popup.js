@@ -66,7 +66,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.querySelector('#avg-price-card .label').textContent = "Market Values (USD)";
             document.querySelector('#psa10-pop-card .label').textContent = "PSA 10";
 
-            // Hide SNKRDUNK specific elements immediately while loading
+            // Hide SNKRDUNK specific elements immediately while on this tab
             document.querySelector('.advanced-market-card').style.display = 'none';
             document.querySelector('.history-section').style.display = 'none';
             if (psa10PopEl) psa10PopEl.textContent = "N/A";
@@ -353,8 +353,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function fetchPriceChartingData(identity) {
         console.log("[DEBUG] Fetching PriceCharting Data for:", identity.smartQuery);
 
-        const trySearch = async (query) => {
-            const searchUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=videogames`;
+        const trySearch = async (query, category = "trading-cards") => {
+            const baseUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}`;
+            const searchUrl = category ? `${baseUrl}&type=${category}` : baseUrl;
             const resp = await fetch(searchUrl);
             if (!resp.ok) return null;
             const html = await resp.text();
@@ -363,19 +364,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            // Stage 1: Precise Search
-            const query1 = `${identity.year} ${identity.subject} ${identity.idRaw} ${identity.language}`.replace(/\s+/g, ' ').trim();
+            // Stage 1: Subject + Number + Set (Precise)
+            const query1 = `${identity.subject} ${identity.idRaw} ${identity.setMarker || ""}`.replace(/\s+/g, ' ').trim();
             let doc = await trySearch(query1);
 
             // Check results
             let isProductPage = doc ? doc.getElementById('price_renderer') : false;
             let results = doc ? doc.querySelectorAll('#search-results tr') : [];
 
-            // Stage 2: Lean Search if precise failed
+            // Stage 2: Subject + Number (Robust)
             if (!isProductPage && results.length === 0) {
-                console.log("[DEBUG] PC Precise search failed, trying lean query...");
-                const query2 = `${identity.subject} ${identity.idRaw}`.trim();
+                console.log("[DEBUG] PC Stage 1 failed, trying Subject + Number...");
+                const query2 = `${identity.subject} ${identity.idRaw}`.replace(/\s+/g, ' ').trim();
                 doc = await trySearch(query2);
+                isProductPage = doc ? doc.getElementById('price_renderer') : false;
+                results = doc ? doc.querySelectorAll('#search-results tr') : [];
+            }
+
+            // Stage 3: Super Lean (No Category Filter) if still nothing
+            if (!isProductPage && results.length === 0) {
+                console.log("[DEBUG] PC Stage 2 failed, trying Super Lean (Global Search)...");
+                const query3 = `${identity.subject} ${identity.idRaw}`.replace(/\s+/g, ' ').trim();
+                doc = await trySearch(query3, null);
                 isProductPage = doc ? doc.getElementById('price_renderer') : false;
                 results = doc ? doc.querySelectorAll('#search-results tr') : [];
             }
@@ -446,7 +456,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelector('.advanced-market-card').style.display = 'none';
         document.querySelector('.history-section').style.display = 'none';
 
-        const pcUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(data.title)}&type=videogames`;
+        const pcUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(data.title)}`;
         viewBtn.textContent = "View on PriceCharting";
         viewBtn.onclick = () => { chrome.tabs.create({ url: pcUrl }); };
     }
