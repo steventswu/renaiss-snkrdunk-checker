@@ -11,8 +11,7 @@
   "host_permissions": [
     "*://*.renaiss.xyz/*",
     "*://*.snkrdunk.com/*",
-    "*://*.gemrate.com/*",
-    "*://*.pricecharting.com/*"
+    "*://*.gemrate.com/*"
   ],
   "action": {},
   "background": {

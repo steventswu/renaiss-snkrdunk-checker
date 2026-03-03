@@ -10,79 +10,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const psa10PopEl = document.getElementById('psa10-pop');
     const totalGradedPopEl = document.getElementById('total-graded-pop');
     const closeBtn = document.getElementById('closeModal');
-    const tabButtons = document.querySelectorAll('.tab-btn');
-
-    let appState = {
-        activeTab: 'snkrdunk',
-        snkrdunkData: {
-            listings: [],
-            history: []
-        },
-        priceChartingData: null,
-        identity: null
-    };
-
-    // Tab Switching Logic
-    tabButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const tab = btn.dataset.tab;
-            if (appState.activeTab === tab) return;
-
-            // Update UI state
-            tabButtons.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            appState.activeTab = tab;
-
-            // Render existing data for the selected tab
-            renderTabContent();
-        });
-    });
-
-    function renderTabContent() {
-        if (appState.activeTab === 'snkrdunk') {
-            // Restore SNKRDUNK Labels
-            document.querySelector('#avg-price-card .label').textContent = "30-Day Avg (PSA 10)";
-            document.querySelector('#psa10-pop-card .label').textContent = "PSA 10 POP";
-            document.querySelector('#total-pop-card .label').textContent = "TOTAL GRADED";
-
-            // Restore High/Low labels
-            const subStats = document.querySelectorAll('.sub-stats .stat-item');
-            if (subStats.length >= 2) {
-                subStats[0].querySelector('.s-label').textContent = "High";
-                subStats[1].querySelector('.s-label').textContent = "Low";
-            }
-
-            // Show sections
-            document.querySelector('.advanced-market-card').style.display = 'block';
-            document.querySelector('.history-section').style.display = 'block';
-
-            if (appState.snkrdunkData.listings.length > 0 || appState.snkrdunkData.history.length > 0) {
-                processAndRenderData(appState.snkrdunkData.listings, appState.snkrdunkData.history);
-            } else {
-                resetUI();
-            }
-        } else if (appState.activeTab === 'pricecharting') {
-            // Update labels for PriceCharting
-            document.querySelector('#avg-price-card .label').textContent = "Market Values (USD)";
-            document.querySelector('#psa10-pop-card .label').textContent = "PSA 10";
-
-            // Hide SNKRDUNK specific elements immediately while on this tab
-            document.querySelector('.advanced-market-card').style.display = 'none';
-            document.querySelector('.history-section').style.display = 'none';
-            if (psa10PopEl) psa10PopEl.textContent = "N/A";
-            if (totalGradedPopEl) totalGradedPopEl.textContent = "N/A";
-            if (totalUnitsSoldEl) totalUnitsSoldEl.textContent = "N/A";
-
-            if (appState.priceChartingData) {
-                renderPriceChartingData(appState.priceChartingData);
-            } else {
-                resetUI();
-                if (appState.identity) {
-                    fetchPriceChartingData(appState.identity);
-                }
-            }
-        }
-    }
 
     if (closeBtn) {
         closeBtn.onclick = () => {
@@ -100,8 +27,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
         if (response && (response.rawTitle || response.name)) {
             cardNameEl.textContent = response.name || response.rawTitle;
-            appState.identity = refineSearchQuery(response);
-            searchSnkrdunk(appState.identity);
+            searchSnkrdunk(response);
         } else {
             cardNameEl.textContent = "Card not found";
         }
@@ -166,7 +92,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
-    async function searchSnkrdunk(identity) {
+    async function searchSnkrdunk(metadata) {
+        const identity = refineSearchQuery(metadata);
         resetUI();
 
         async function fetchProducts(query) {
@@ -340,148 +267,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             // New: Fetch population from Gemrate
             fetchGemratePop(identity);
 
-            appState.snkrdunkData = { listings, history };
-            if (appState.activeTab === 'snkrdunk') {
-                processAndRenderData(listings, history);
-            }
+            processAndRenderData(listings, history);
         } catch (e) {
             console.error("Listing Fetch Error", e);
             handleNoMatch(identity);
         }
-    }
-
-    async function fetchPriceChartingData(identity) {
-        console.log("[DEBUG] Fetching PriceCharting Data for:", identity.smartQuery);
-
-        const trySearch = async (query, category = "trading-cards") => {
-            const baseUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}`;
-            const searchUrl = category ? `${baseUrl}&type=${category}` : baseUrl;
-            const resp = await fetch(searchUrl);
-            if (!resp.ok) return null;
-            const html = await resp.text();
-            const parser = new DOMParser();
-            return parser.parseFromString(html, 'text/html');
-        };
-
-        try {
-            // Stage 1: Subject + Number + Set (Precise)
-            const query1 = `${identity.subject} ${identity.idRaw} ${identity.setMarker || ""}`.replace(/\s+/g, ' ').trim();
-            let doc = await trySearch(query1);
-
-            // Check results
-            let isProductPage = doc ? doc.getElementById('price_renderer') : false;
-            let results = doc ? doc.querySelectorAll('#search-results tr') : [];
-
-            // Stage 2: Subject + Number (Robust)
-            if (!isProductPage && results.length === 0) {
-                console.log("[DEBUG] PC Stage 1 failed, trying Subject + Number...");
-                const query2 = `${identity.subject} ${identity.idRaw}`.replace(/\s+/g, ' ').trim();
-                doc = await trySearch(query2);
-                isProductPage = doc ? doc.getElementById('price_renderer') : false;
-                results = doc ? doc.querySelectorAll('#search-results tr') : [];
-            }
-
-            // Stage 3: Super Lean (No Category Filter) if still nothing
-            if (!isProductPage && results.length === 0) {
-                console.log("[DEBUG] PC Stage 2 failed, trying Super Lean (Global Search)...");
-                const query3 = `${identity.subject} ${identity.idRaw}`.replace(/\s+/g, ' ').trim();
-                doc = await trySearch(query3, null);
-                isProductPage = doc ? doc.getElementById('price_renderer') : false;
-                results = doc ? doc.querySelectorAll('#search-results tr') : [];
-            }
-
-            if (!doc) throw new Error("PriceCharting fetch failed");
-
-            let productDoc = doc;
-            if (!isProductPage) {
-                if (results.length === 0) {
-                    handlePCNoMatch();
-                    return;
-                }
-                const firstLink = results[0].querySelector('a.title');
-                if (!firstLink) {
-                    handlePCNoMatch();
-                    return;
-                }
-                const productUrl = "https://www.pricecharting.com" + firstLink.getAttribute('href');
-                const productResp = await fetch(productUrl);
-                const productHtml = await productResp.text();
-                productDoc = new DOMParser().parseFromString(productHtml, 'text/html');
-            }
-
-            // Parse Prices
-            const getPrice = (id) => {
-                const el = productDoc.getElementById(id);
-                if (!el) return null;
-                const priceText = el.querySelector('.price')?.textContent || el.textContent;
-                return priceText.replace(/[^0-9.]/g, '').trim();
-            };
-
-            const data = {
-                ungraded: getPrice('ungraded_price'),
-                psa9: getPrice('grade_9_price'),
-                psa10: getPrice('psa_10_price'),
-                title: productDoc.querySelector('#product_name')?.textContent?.trim() || "Unknown Card"
-            };
-
-            appState.priceChartingData = data;
-            if (appState.activeTab === 'pricecharting') {
-                renderPriceChartingData(data);
-            }
-
-        } catch (e) {
-            console.error("PriceCharting Fetch Error:", e);
-            if (appState.activeTab === 'pricecharting') {
-                handlePCNoMatch();
-            }
-        }
-    }
-
-    function renderPriceChartingData(data) {
-        psa10PriceEl.textContent = data.psa10 ? `$${data.psa10}` : "N/A";
-        psa10StatusEl.textContent = "PriceCharting PSA 10";
-
-        document.getElementById('avg-val').textContent = data.psa10 ? `$${data.psa10}` : "--";
-        document.getElementById('high-val').textContent = data.psa9 ? `$${data.psa9}` : "--";
-        document.getElementById('low-val').textContent = data.ungraded ? `$${data.ungraded}` : "--";
-
-        // Update labels for the mini-stats
-        const subStats = document.querySelectorAll('.sub-stats .stat-item');
-        if (subStats.length >= 2) {
-            subStats[0].querySelector('.s-label').textContent = "Grade 9";
-            subStats[1].querySelector('.s-label').textContent = "Ungraded";
-        }
-
-        // Hide chart and history as we don't have them for PC yet
-        document.querySelector('.advanced-market-card').style.display = 'none';
-        document.querySelector('.history-section').style.display = 'none';
-
-        const pcUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(data.title)}`;
-        viewBtn.textContent = "View on PriceCharting";
-        viewBtn.onclick = () => { chrome.tabs.create({ url: pcUrl }); };
-    }
-
-    function handlePCNoMatch() {
-        psa10PriceEl.textContent = "N/A";
-        psa10StatusEl.textContent = "No match on PriceCharting";
-
-        document.getElementById('avg-val').textContent = "--";
-        document.getElementById('high-val').textContent = "--";
-        document.getElementById('low-val').textContent = "--";
-
-        if (psa10PopEl) psa10PopEl.textContent = "N/A";
-        if (totalGradedPopEl) totalGradedPopEl.textContent = "N/A";
-        if (totalUnitsSoldEl) totalUnitsSoldEl.textContent = "N/A";
-
-        // Hide chart and history
-        document.querySelector('.advanced-market-card').style.display = 'none';
-        document.querySelector('.history-section').style.display = 'none';
-
-        viewBtn.textContent = "Search PriceCharting";
-        viewBtn.onclick = () => {
-            const query = appState.identity ? `${appState.identity.subject} ${appState.identity.idRaw}` : "Pokemon";
-            chrome.tabs.create({ url: `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=videogames` });
-        };
     }
 
     function processAndRenderData(listings, history = []) {
