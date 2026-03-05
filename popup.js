@@ -279,9 +279,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
-        // Fixed currency symbol for consistency
-        const currencySymbol = "US $ ";
-        console.log(`[DEBUG] Using Fixed Currency: "${currencySymbol}"`);
+        // Currency Conversion Logic
+        const fixedPrefix = "US $ ";
+        let conversionRate = 1.0; // Default to 1:1 if already USD
+
+        const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
+            (history[0] && history[0].price) ||
+            (listings[0] && listings[0].price);
+
+        if (firstPriceStr) {
+            const priceStr = firstPriceStr.toString().toUpperCase();
+            if (priceStr.includes("HK")) {
+                conversionRate = 0.128; // HKD to USD approx
+                console.log("[DEBUG] Detected HKD. Using rate 0.128");
+            } else if (priceStr.includes("JP") || priceStr.includes("¥")) {
+                conversionRate = 0.0067; // JPY to USD approx
+                console.log("[DEBUG] Detected JPY. Using rate 0.0067");
+            } else if (priceStr.includes("SG")) {
+                conversionRate = 0.74; // SGD to USD approx
+                console.log("[DEBUG] Detected SGD. Using rate 0.74");
+            }
+        }
+
+        const convert = (val) => {
+            if (!val) return "0";
+            const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
+            return isNaN(num) ? "0" : (num * conversionRate).toFixed(2);
+        };
 
         // 1. Live Price - prioritize newest available listing (not sold)
         if (psa10Listings.length > 0) {
@@ -289,20 +313,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             const latestSold = psa10Listings.find(l => l.isSold);
 
             if (newestListing) {
-                psa10PriceEl.textContent = newestListing.price || "N/A";
+                psa10PriceEl.textContent = `${fixedPrefix}${convert(newestListing.price)}`;
                 psa10StatusEl.textContent = "Newest Listing";
             } else if (latestSold) {
-                psa10PriceEl.textContent = latestSold.price || "N/A";
+                psa10PriceEl.textContent = `${fixedPrefix}${convert(latestSold.price)}`;
                 psa10StatusEl.textContent = "Latest Sale (Listings)";
             } else {
-                psa10PriceEl.textContent = psa10Listings[0].price || "N/A";
+                psa10PriceEl.textContent = `${fixedPrefix}${convert(psa10Listings[0].price)}`;
                 psa10StatusEl.textContent = "Live Listing";
             }
         } else if (history.length > 0) {
             // Fallback to history for price if no listings found (PSA 10 only)
             const psa10Only = history.filter(h => (h.condition || "").toUpperCase().includes("PSA 10"));
             const latest = psa10Only[0] || history[0];
-            psa10PriceEl.textContent = latest.price ? `${currencySymbol}${latest.price}` : "N/A";
+            psa10PriceEl.textContent = latest.price ? `${fixedPrefix}${convert(latest.price)}` : "N/A";
             psa10StatusEl.textContent = psa10Only.length > 0 ? "Latest Sale (PSA 10)" : "Latest Sale (History)";
         } else {
             psa10PriceEl.textContent = "N/A";
@@ -363,11 +387,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log(`[OUTLIER] Filtered ${outlierCount} suspected bulk sales (threshold: $${Math.round(outlierThreshold)})`);
                 }
 
-                document.getElementById('high-val').textContent = `${currencySymbol}${Math.round(Math.max(...prices)).toLocaleString()}`;
-                document.getElementById('low-val').textContent = `${currencySymbol}${Math.round(Math.min(...prices)).toLocaleString()}`;
-                const avgVal = prices.reduce((a, b) => a + b, 0) / prices.length;
-                document.getElementById('avg-val').textContent = `${currencySymbol}${Math.round(avgVal).toLocaleString()}`;
-                avgPriceEl.textContent = `${currencySymbol}${Math.round(avgVal).toLocaleString()}`;
+                document.getElementById('high-val').textContent = `${fixedPrefix}${Math.round(Math.max(...prices) * conversionRate).toLocaleString()}`;
+                document.getElementById('low-val').textContent = `${fixedPrefix}${Math.round(Math.min(...prices) * conversionRate).toLocaleString()}`;
+                const avgVal = (prices.reduce((a, b) => a + b, 0) / prices.length) * conversionRate;
+                document.getElementById('avg-val').textContent = `${fixedPrefix}${Math.round(avgVal).toLocaleString()}`;
+                avgPriceEl.textContent = `${fixedPrefix}${Math.round(avgVal).toLocaleString()}`;
             }
         } else {
             // Reset if no history
@@ -390,7 +414,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             historyListEl.innerHTML = recent5.map(item => `
                 <div class="history-item">
                     <span class="h-condition">${(item.condition || "SOLD").toUpperCase()}</span>
-                    <span class="h-price">${currencySymbol}${item.price}</span>
+                    <span class="h-price">${fixedPrefix}${convert(item.price)}</span>
                     <span class="h-status">DATE: ${formatDate(item.tradedAt)}</span>
                 </div>
             `).join('') || '<div class="history-item loading">No history data found</div>';
