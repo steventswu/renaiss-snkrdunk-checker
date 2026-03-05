@@ -280,7 +280,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
         // Currency Conversion Logic
-        const fixedPrefix = "US $ ";
+        const fixedPrefix = "$ ";
         let conversionRate = 1.0; // Default to 1:1 if already USD
 
         const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
@@ -305,8 +305,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!val) return "0";
             const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
             if (isNaN(num)) return "0";
-            const converted = (num * conversionRate).toFixed(2);
-            return Number(converted).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const converted = Math.round(num * conversionRate);
+            return converted.toLocaleString();
         };
 
         // 1. Live Price - prioritize newest available listing (not sold)
