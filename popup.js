@@ -279,6 +279,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
+        // Helper to extract currency symbol from price strings (e.g., "HK $", "US $", "¥", "$")
+        const extractSymbol = (priceStr) => {
+            if (!priceStr) return "$";
+            const match = priceStr.match(/^([A-Z]*\s*\$|¥|€|£|\$)/i);
+            return match ? match[1].trim() + " " : "$ ";
+        };
+
+        // Get currency symbol from listings or history
+        let currencySymbol = "$ ";
+        const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
+            (history[0] && history[0].price) ||
+            (listings[0] && listings[0].price);
+        if (firstPriceStr) {
+            currencySymbol = extractSymbol(firstPriceStr.toString());
+        }
+        console.log(`[DEBUG] Detected Currency Symbol: "${currencySymbol}"`);
+
         // 1. Live Price - prioritize newest available listing (not sold)
         if (psa10Listings.length > 0) {
             const newestListing = psa10Listings.find(l => !l.isSold);
@@ -298,7 +315,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Fallback to history for price if no listings found (PSA 10 only)
             const psa10Only = history.filter(h => (h.condition || "").toUpperCase().includes("PSA 10"));
             const latest = psa10Only[0] || history[0];
-            psa10PriceEl.textContent = latest.price ? `US $${latest.price}` : "N/A";
+            psa10PriceEl.textContent = latest.price ? `${currencySymbol}${latest.price}` : "N/A";
             psa10StatusEl.textContent = psa10Only.length > 0 ? "Latest Sale (PSA 10)" : "Latest Sale (History)";
         } else {
             psa10PriceEl.textContent = "N/A";
@@ -359,11 +376,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log(`[OUTLIER] Filtered ${outlierCount} suspected bulk sales (threshold: $${Math.round(outlierThreshold)})`);
                 }
 
-                document.getElementById('high-val').textContent = `$${Math.round(Math.max(...prices)).toLocaleString()}`;
-                document.getElementById('low-val').textContent = `$${Math.round(Math.min(...prices)).toLocaleString()}`;
+                document.getElementById('high-val').textContent = `${currencySymbol}${Math.round(Math.max(...prices)).toLocaleString()}`;
+                document.getElementById('low-val').textContent = `${currencySymbol}${Math.round(Math.min(...prices)).toLocaleString()}`;
                 const avgVal = prices.reduce((a, b) => a + b, 0) / prices.length;
-                document.getElementById('avg-val').textContent = `$${Math.round(avgVal).toLocaleString()}`;
-                avgPriceEl.textContent = `US $${Math.round(avgVal).toLocaleString()}`;
+                document.getElementById('avg-val').textContent = `${currencySymbol}${Math.round(avgVal).toLocaleString()}`;
+                avgPriceEl.textContent = `${currencySymbol}${Math.round(avgVal).toLocaleString()}`;
             }
         } else {
             // Reset if no history
@@ -386,7 +403,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             historyListEl.innerHTML = recent5.map(item => `
                 <div class="history-item">
                     <span class="h-condition">${(item.condition || "SOLD").toUpperCase()}</span>
-                    <span class="h-price">US $${item.price}</span>
+                    <span class="h-price">${currencySymbol}${item.price}</span>
                     <span class="h-status">DATE: ${formatDate(item.tradedAt)}</span>
                 </div>
             `).join('') || '<div class="history-item loading">No history data found</div>';
