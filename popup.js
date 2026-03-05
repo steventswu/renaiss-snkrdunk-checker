@@ -304,7 +304,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const convert = (val) => {
             if (!val) return "0";
             const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
-            return isNaN(num) ? "0" : (num * conversionRate).toFixed(2);
+            if (isNaN(num)) return "0";
+            const converted = (num * conversionRate).toFixed(2);
+            return Number(converted).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         };
 
         // 1. Live Price - prioritize newest available listing (not sold)
