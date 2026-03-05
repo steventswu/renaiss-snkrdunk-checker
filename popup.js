@@ -279,22 +279,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
-        // Helper to extract currency symbol from price strings (e.g., "HK $", "US $", "¥", "$")
-        const extractSymbol = (priceStr) => {
-            if (!priceStr) return "$";
-            const match = priceStr.match(/^([A-Z]*\s*\$|¥|€|£|\$)/i);
-            return match ? match[1].trim() + " " : "$ ";
-        };
-
-        // Get currency symbol from listings or history
-        let currencySymbol = "$ ";
-        const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
-            (history[0] && history[0].price) ||
-            (listings[0] && listings[0].price);
-        if (firstPriceStr) {
-            currencySymbol = extractSymbol(firstPriceStr.toString());
-        }
-        console.log(`[DEBUG] Detected Currency Symbol: "${currencySymbol}"`);
+        // Fixed currency symbol for consistency
+        const currencySymbol = "US $ ";
+        console.log(`[DEBUG] Using Fixed Currency: "${currencySymbol}"`);
 
         // 1. Live Price - prioritize newest available listing (not sold)
         if (psa10Listings.length > 0) {
