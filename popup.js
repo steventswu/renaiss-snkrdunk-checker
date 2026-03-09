@@ -27,7 +27,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
         if (response && (response.rawTitle || response.name)) {
             cardNameEl.textContent = response.name || response.rawTitle;
+            // Run SNKRDUNK and PriceCharting searches in parallel
+            const identity = refineSearchQuery(response);
             searchSnkrdunk(response);
+            fetchPriceChartingData(identity);
         } else {
             cardNameEl.textContent = "Card not found";
         }
@@ -644,6 +647,177 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // ==================== PRICECHARTING INTEGRATION ====================
+    async function fetchPriceChartingData(identity) {
+        const pcStatusEl = document.getElementById('pc-status');
+        const pcUngradedEl = document.getElementById('pc-ungraded');
+        const pcPsa9El = document.getElementById('pc-psa9');
+        const pcPsa10El = document.getElementById('pc-psa10');
+        const pcLinkEl = document.getElementById('pc-link');
+
+        if (!pcStatusEl) return; // UI not present
+
+        pcStatusEl.textContent = 'Searching...';
+
+        // Build search queries (adapted from Unofficial_Renaiss_Monitor)
+        const name = (identity.subject || '').replace(/\(.*?\)/g, '').trim();
+        const number = (identity.idRaw || '').replace(/^0+/, '') || '0';
+        const numberPadded = number.padStart(3, '0');
+        const setCode = identity.setMarker || '';
+
+        const queries = [];
+        if (setCode) queries.push(`${name} ${setCode} ${number}`);
+        queries.push(`${name} ${number}`);
+        if (numberPadded !== '000') queries.push(`${name} ${numberPadded}`);
+
+        console.log(`[PC] Searching PriceCharting with queries:`, queries);
+
+        let productPageUrl = null;
+
+        // Step 1: Search for the product
+        for (const query of queries) {
+            try {
+                const searchUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=prices`;
+                console.log(`[PC] Trying: ${searchUrl}`);
+                const resp = await fetch(searchUrl);
+                if (!resp.ok) continue;
+
+                const html = await resp.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+
+                // Check if we landed directly on a product page
+                const productName = doc.querySelector('#product_name');
+                if (productName) {
+                    productPageUrl = resp.url || searchUrl;
+                    console.log(`[PC] Direct product page: ${productPageUrl}`);
+                    // Parse prices directly from this page
+                    const prices = parsePcPrices(doc);
+                    if (prices) {
+                        renderPcPrices(prices, productPageUrl);
+                        return;
+                    }
+                }
+
+                // It's a search results page - find best matching product URL
+                const links = doc.querySelectorAll('table.offer a[href*="/game/"]');
+                if (links.length === 0) {
+                    // Try alternative selector
+                    const altLinks = doc.querySelectorAll('a[href*="/game/"]');
+                    if (altLinks.length === 0) continue;
+                    // Use altLinks
+                    productPageUrl = findBestPcMatch(Array.from(altLinks), name, number, numberPadded, setCode);
+                } else {
+                    productPageUrl = findBestPcMatch(Array.from(links), name, number, numberPadded, setCode);
+                }
+
+                if (productPageUrl) break;
+            } catch (e) {
+                console.warn(`[PC] Search error for "${query}":`, e);
+            }
+        }
+
+        if (!productPageUrl) {
+            pcStatusEl.textContent = 'Not Found';
+            console.log('[PC] No matching product found on PriceCharting');
+            return;
+        }
+
+        // Step 2: Fetch the product page and extract prices
+        try {
+            console.log(`[PC] Fetching product page: ${productPageUrl}`);
+            const resp = await fetch(productPageUrl);
+            if (!resp.ok) {
+                pcStatusEl.textContent = 'Error';
+                return;
+            }
+            const html = await resp.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const prices = parsePcPrices(doc);
+
+            if (prices) {
+                renderPcPrices(prices, productPageUrl);
+            } else {
+                pcStatusEl.textContent = 'No prices';
+            }
+        } catch (e) {
+            console.warn('[PC] Product page fetch error:', e);
+            pcStatusEl.textContent = 'Error';
+        }
+
+        function findBestPcMatch(linkElements, cardName, num, numPadded, set) {
+            const nameSlug = cardName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+            const setSlug = set.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+            let bestBoth = null, bestName = null, bestNum = null;
+
+            for (const link of linkElements) {
+                const href = link.getAttribute('href');
+                if (!href || !href.includes('/game/')) continue;
+                const fullUrl = href.startsWith('http') ? href : `https://www.pricecharting.com${href}`;
+                const slug = href.split('/').pop().toLowerCase();
+
+                const hasName = nameSlug.split('-').filter(w => w.length > 2).some(w => slug.includes(w));
+                const hasNum = slug.includes(num) || slug.includes(numPadded);
+                const hasSet = setSlug && slug.replace(/-/g, '').includes(setSlug);
+
+                if (hasName && hasNum) {
+                    if (!bestBoth || (hasSet && !bestBoth.hasSet)) {
+                        bestBoth = { url: fullUrl, hasSet };
+                    }
+                } else if (hasName && !bestName) {
+                    bestName = fullUrl;
+                } else if (hasNum && !bestNum) {
+                    bestNum = fullUrl;
+                }
+            }
+
+            return bestBoth?.url || bestName || bestNum || null;
+        }
+
+        function parsePcPrices(doc) {
+            // PriceCharting uses these IDs for trading card grades:
+            // Ungraded = td#used_price, PSA 9 = td#graded_price, PSA 10 = td#manual_only_price
+            const extractPrice = (selector) => {
+                const el = doc.querySelector(selector);
+                if (!el) return null;
+                const text = el.textContent.trim();
+                const match = text.match(/\$[\d,]+\.?\d*/);
+                if (!match) return null;
+                return parseFloat(match[0].replace(/[$,]/g, ''));
+            };
+
+            const ungraded = extractPrice('td#used_price .price') || extractPrice('td#used_price');
+            const psa9 = extractPrice('td#graded_price .price') || extractPrice('td#graded_price');
+            const psa10 = extractPrice('td#manual_only_price .price') || extractPrice('td#manual_only_price');
+
+            if (ungraded === null && psa9 === null && psa10 === null) return null;
+
+            return { ungraded, psa9, psa10 };
+        }
+
+        function renderPcPrices(prices, url) {
+            const fmt = (v) => v !== null && v > 0 ? `$ ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
+
+            if (pcUngradedEl) pcUngradedEl.textContent = fmt(prices.ungraded);
+            if (pcPsa9El) pcPsa9El.textContent = fmt(prices.psa9);
+            if (pcPsa10El) pcPsa10El.textContent = fmt(prices.psa10);
+            if (pcStatusEl) pcStatusEl.textContent = '✓ Found';
+            if (pcLinkEl) {
+                pcLinkEl.href = url;
+                pcLinkEl.style.display = 'block';
+                pcLinkEl.onclick = (e) => {
+                    e.preventDefault();
+                    chrome.tabs.create({ url: url });
+                };
+            }
+
+            console.log(`[PC] Prices rendered - Ungraded: ${prices.ungraded}, PSA 9: ${prices.psa9}, PSA 10: ${prices.psa10}`);
+        }
+    }
+    // ==================== END PRICECHARTING ====================
+
     function resetUI() {
         psa10PriceEl.textContent = "...";
         avgPriceEl.textContent = "...";
@@ -655,6 +829,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (psa10PopEl) psa10PopEl.textContent = "...";
         if (totalGradedPopEl) totalGradedPopEl.textContent = "...";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
+        // Reset PC section
+        const pcStatusEl = document.getElementById('pc-status');
+        const pcUngradedEl = document.getElementById('pc-ungraded');
+        const pcPsa9El = document.getElementById('pc-psa9');
+        const pcPsa10El = document.getElementById('pc-psa10');
+        const pcLinkEl = document.getElementById('pc-link');
+        if (pcStatusEl) pcStatusEl.textContent = 'Searching...';
+        if (pcUngradedEl) pcUngradedEl.textContent = '--';
+        if (pcPsa9El) pcPsa9El.textContent = '--';
+        if (pcPsa10El) pcPsa10El.textContent = '--';
+        if (pcLinkEl) pcLinkEl.style.display = 'none';
     }
 
     function handleNoMatch(identity) {
