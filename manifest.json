@@ -12,7 +12,8 @@
     "*://*.renaiss.xyz/*",
     "*://*.snkrdunk.com/*",
     "*://*.gemrate.com/*",
-    "*://*.pricecharting.com/*"
+    "*://*.pricecharting.com/*",
+    "*://open.er-api.com/*"
   ],
   "action": {},
   "background": {

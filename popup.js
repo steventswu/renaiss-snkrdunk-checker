@@ -27,6 +27,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
         if (response && (response.rawTitle || response.name)) {
             cardNameEl.textContent = response.name || response.rawTitle;
+            // Pre-fetch exchange rate (non-blocking)
+            getExchangeRate();
             // Run SNKRDUNK and PriceCharting searches in parallel
             const identity = refineSearchQuery(response);
             searchSnkrdunk(response);
@@ -38,31 +40,70 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error("Popup Init Error:", error);
     }
 
+    // Shared price parsing utility
+    function parsePrice(val) {
+        if (!val) return 0;
+        const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
+        return isNaN(num) ? 0 : num;
+    }
+
+    // Session-cached exchange rate (fetched once)
+    let _cachedJpyRate = null;
+    async function getExchangeRate() {
+        if (_cachedJpyRate !== null) return _cachedJpyRate;
+        try {
+            const resp = await fetch('https://open.er-api.com/v6/latest/USD');
+            const data = await resp.json();
+            _cachedJpyRate = data.rates?.JPY || 150.0;
+            console.log(`[FX] Live rate fetched: 1 USD = ¥${_cachedJpyRate}`);
+        } catch (e) {
+            console.warn('[FX] Failed to fetch live rate, using fallback', e);
+            _cachedJpyRate = 150.0;
+        }
+        return _cachedJpyRate;
+    }
+
     function refineSearchQuery(metadata) {
-        // If we have structured metadata, use it to build a super precise query
         if (metadata.name && metadata.number) {
             const cleanName = metadata.name.replace(/Lv\.X/g, '').trim();
             const setMarker = metadata.set || "";
             const year = metadata.year || "";
             const lang = metadata.language || "Japanese";
 
+            // Set code mapping for better SNKRDUNK matching
+            let setCode = setMarker;
+            if (setMarker.includes("Universe")) setCode = "s12a";
+            if (setMarker.includes("151")) setCode = "sv2a";
+
+            // TCG detection: One Piece cards don't need "Pokemon" keyword
+            const rawTitle = (metadata.rawTitle || "").toUpperCase();
+            const isOnePiece = rawTitle.includes("ONE PIECE") || setMarker.toUpperCase().includes("ONE PIECE") ||
+                /^(OP|ST)\d{2}/.test(setMarker.toUpperCase());
+            const tcgKeyword = isOnePiece ? "" : "Pokemon";
+
+            // Pad number to 3 digits (SNKRDUNK standard)
+            const idRaw = metadata.number.replace('#', '').trim();
+            const digitsOnly = idRaw.replace(/[^0-9]/g, '');
+            const paddedNumber = digitsOnly.padStart(3, '0');
+
             return {
-                idRaw: metadata.number.replace('#', '').trim(),
+                idRaw,
+                paddedNumber,
                 fullId: metadata.number,
-                subject: metadata.name,
-                setMarker: setMarker,
-                year: year,
+                subject: cleanName,
+                setMarker: setCode.toUpperCase(),
+                year,
                 language: lang,
-                // Primary query: Set + Number + Name
-                smartQuery: `${year} Pokemon ${lang} ${metadata.number} ${cleanName}`.replace(/\s+/g, ' ').trim(),
-                // Ultra Precise: Set + Number
-                preciseQuery: `${setMarker} ${metadata.number}`.trim(),
+                isOnePiece,
+                tcgKeyword,
+                smartQuery: `${tcgKeyword} ${cleanName} ${metadata.number} ${setCode}`.replace(/\s+/g, ' ').trim(),
+                preciseQuery: `${setCode} ${metadata.number}`.trim(),
                 leanQuery: `${cleanName} ${metadata.number}`.trim(),
-                setQuery: `${setMarker} ${metadata.number}`.trim()
+                setQuery: `${setCode} ${metadata.number}`.trim()
             };
         }
 
-        // Fallback to old parsing if metadata is incomplete
+        // Fallback parsing for incomplete metadata
         const title = metadata.rawTitle || "";
         let cleaned = title.replace(/\b(PSA|PSA10|Gem|Mint|Near|NearMint|Excellent|Grader|Authentic|CGC|BGS|10|9|8)\b/gi, '');
         cleaned = cleaned.replace(/\b(Trading\s*Card\s*Game|TCG|Card\s*Pack|Edition|Deck)\b/gi, '');
@@ -74,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const idMatch = title.match(/(#?\d+[\/\-]\d+|#\d+)/);
         const fullId = idMatch ? idMatch[0] : "";
         const idRaw = fullId.replace('#', '').trim();
+        const paddedNumber = idRaw.replace(/[^0-9]/g, '').padStart(3, '0');
 
         const setCodeMatch = title.match(/\b([A-Z]{1,4}(?:\d+)?(?:\-[A-Z]+)?)\b/g) || [];
         const setMarker = setCodeMatch.find(m => !['PSA', 'TCG', 'GEM', 'CGC', 'BGS', 'USA', '2023'].includes(m.toUpperCase())) || "";
@@ -84,6 +126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         return {
             idRaw,
+            paddedNumber,
             fullId,
             subject,
             setMarker: setMarker.toUpperCase(),
@@ -115,35 +158,54 @@ document.addEventListener('DOMContentLoaded', async () => {
             const pname = p.name.toUpperCase();
             const normPname = pname.replace(/[^A-Z0-9]/g, '');
             const targetNo = ident.idRaw ? ident.idRaw.replace(/[^A-Z0-9]/g, '') : "";
+            const paddedNo = ident.paddedNumber || targetNo.padStart(3, '0');
 
+            // 1. Number Matching (highest weight)
             if (targetNo) {
-                // Precise number matching
                 const idRegex = new RegExp(`(?<!\\d)${targetNo}(?!\\d)`);
-                if (idRegex.test(pname)) {
-                    score += 40; // Increased weight for number
-                    if (ident.idRaw.includes('/') && pname.includes(ident.idRaw)) score += 10;
-                } else if (normPname.includes(targetNo)) {
+                if (idRegex.test(pname) || pname.includes(`[${targetNo}]`) || pname.includes(`${paddedNo}]`)) {
+                    score += 50;
+                    if (ident.idRaw.includes('/') && pname.includes(ident.idRaw)) score += 15;
+                } else if (normPname.includes(paddedNo) || normPname.includes(targetNo)) {
                     score += 15;
                 }
             }
 
-            // Language score
-            if (ident.language && pname.includes(ident.language.toUpperCase())) score += 20;
+            // 2. Subject Exactness (with normalization for dots, rarity suffixes)
+            const targetSubject = (ident.subject || '').toUpperCase();
+            const targetNormalized = targetSubject.replace(/[^A-Z0-9]/g, '');
 
-            if (ident.setMarker && pname.includes(ident.setMarker.toUpperCase())) score += 25;
+            let pSubject = pname.split('[')[0].trim();
+            // Strip common rarity suffixes for cleaner matching
+            pSubject = pSubject.replace(/\b(AR|SAR|SR|UR|HR|RRR|RR|R|U|C|P|PROMO|HOLO)\b/g, '').trim();
+            const pNormalized = pSubject.replace(/[^A-Z0-9]/g, '');
 
-            if (ident.year) {
-                if (pname.includes(ident.year)) score += 15;
-                else if (/\b(19|20)\d{2}\b/.test(pname)) score -= 30; // Penalize different years
+            if (targetSubject) {
+                if (pSubject === targetSubject || pNormalized === targetNormalized) {
+                    score += 70; // Exact match bonus
+                } else if (pNormalized.includes(targetNormalized)) {
+                    score += 20;
+                    // Short name penalty: prevent "Mew" matching "Mewtwo"
+                    if (targetNormalized.length <= 4 && pNormalized.length > targetNormalized.length + 1) {
+                        score -= 50;
+                    }
+                }
             }
 
-            const subjWords = ident.subject.toUpperCase().split(/\s+/).filter(w => w.length > 3);
-            subjWords.forEach(w => {
-                const cleanW = w.replace(/[^A-Z0-9]/g, '');
-                if (cleanW.length > 3 && pname.includes(cleanW)) score += 10;
-            });
+            // 3. Set Matching
+            if (ident.setMarker) {
+                const setTerms = ident.setMarker.toUpperCase().split(/\s+/).filter(w => w.length >= 3);
+                setTerms.forEach(t => {
+                    if (pname.includes(t)) score += 30;
+                });
+            }
 
-            if (ident.subject.toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
+            // 4. Year & Language
+            if (ident.year && pname.includes(ident.year)) score += 15;
+            if (ident.language && (pname.includes(ident.language.toUpperCase()) || pname.includes('JP'))) score += 15;
+
+            // 5. Special cards
+            if ((ident.subject || '').toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
                 score += 20;
             }
 
@@ -179,16 +241,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const pages = [1, 2, 3, 4];
         const urls = pages.map(p => `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=${p}&sortType=latest&isOnlyOnSale=false`);
 
-        // Fetch trading history for stats
-        // Fetch trading history with endpoint templates
-        // Fetch trading history with endpoint templates
-        // Fetch trading history for stats (Strict Streetwears Endpoint)
-        // Fetch trading history for stats (Strict Streetwears Endpoint)
-        // Fetch trading history with robust fallback (Streetwears First)
-        // Fetch ALL trading history with dynamic pagination
-        // OPTIMIZED: Fetch history pages in PARALLEL (max 3 pages = 300 items)
-        // Fetch ALL trading history with dynamic pagination
-        // OPTIMIZED: Parallel batch fetching (no page limit, gets ALL data)
+        // Fetch ALL trading history with parallel batch fetching
         async function fetchTradingHistory(pid) {
             const cleanPid = pid.toString().trim();
             const perPage = 100;
@@ -282,9 +335,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
-        // Currency Conversion Logic
+        // Currency Conversion — detect currency from first price, use live rate for JPY
         const fixedPrefix = "$ ";
-        let conversionRate = 1.0; // Default to 1:1 if already USD
+        let conversionRate = 1.0;
 
         const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
             (history[0] && history[0].price) ||
@@ -293,23 +346,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (firstPriceStr) {
             const priceStr = firstPriceStr.toString().toUpperCase();
             if (priceStr.includes("HK")) {
-                conversionRate = 0.128; // HKD to USD approx
-                console.log("[DEBUG] Detected HKD. Using rate 0.128");
+                conversionRate = 0.128;
+                console.log("[FX] Detected HKD");
             } else if (priceStr.includes("JP") || priceStr.includes("¥")) {
-                conversionRate = 0.0067; // JPY to USD approx
-                console.log("[DEBUG] Detected JPY. Using rate 0.0067");
+                // Use live rate if available, fallback to hardcoded
+                const jpyRate = _cachedJpyRate || 150.0;
+                conversionRate = 1.0 / jpyRate;
+                console.log(`[FX] Detected JPY. Using rate ${conversionRate.toFixed(6)} (1 USD = ¥${jpyRate})`);
             } else if (priceStr.includes("SG")) {
-                conversionRate = 0.74; // SGD to USD approx
-                console.log("[DEBUG] Detected SGD. Using rate 0.74");
+                conversionRate = 0.74;
+                console.log("[FX] Detected SGD");
             }
         }
 
         const convert = (val) => {
-            if (!val) return "0";
-            const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
-            if (isNaN(num)) return "0";
-            const converted = Math.round(num * conversionRate);
-            return converted.toLocaleString();
+            const num = parsePrice(val);
+            if (num === 0) return "0";
+            return Math.round(num * conversionRate).toLocaleString();
         };
 
         // 1. Live Price - prioritize newest available listing (not sold)
@@ -365,7 +418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 3. Stats (High/Low/Avg) - Use HISTORY 30D with OUTLIER FILTERING
         if (soldIn30.length > 0) {
-            const rawPrices = soldIn30.map(h => parseFloat((h.price || "0").toString().replace(/[^0-9.]/g, ''))).filter(p => !isNaN(p) && p > 0);
+            const rawPrices = soldIn30.map(h => parsePrice(h.price)).filter(p => p > 0);
 
             if (rawPrices.length > 0) {
                 // Calculate IQR for robust outlier detection
@@ -457,8 +510,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const weekIdx = weeks.findIndex(w => date >= w.start && date < w.end);
             if (weekIdx !== -1) {
-                const p = parseFloat((item.price || "0").toString().replace(/[^0-9.]/g, ''));
-                if (!isNaN(p)) { weeks[weekIdx].prices.push(p); weeks[weekIdx].volume++; }
+                const p = parsePrice(item.price);
+                if (p > 0) { weeks[weekIdx].prices.push(p); weeks[weekIdx].volume++; }
             }
         });
 
