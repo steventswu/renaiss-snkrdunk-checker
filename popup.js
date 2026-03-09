@@ -18,28 +18,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
-    try {
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (!tab || !tab.url || !tab.url.includes("renaiss.xyz")) {
-            cardNameEl.textContent = "Navigate to Renaiss.xyz";
-            return;
-        }
-        const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
-        if (response && (response.rawTitle || response.name)) {
-            cardNameEl.textContent = response.name || response.rawTitle;
-            // Pre-fetch exchange rate (non-blocking)
-            getExchangeRate();
-            // Run SNKRDUNK and PriceCharting searches in parallel
-            const identity = refineSearchQuery(response);
-            searchSnkrdunk(response);
-            fetchPriceChartingData(identity);
-        } else {
-            cardNameEl.textContent = "Card not found";
-        }
-    } catch (error) {
-        console.error("Popup Init Error:", error);
-    }
-
     // Shared price parsing utility
     function parsePrice(val) {
         if (!val) return 0;
@@ -61,6 +39,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             _cachedJpyRate = 150.0;
         }
         return _cachedJpyRate;
+    }
+
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab || !tab.url || !tab.url.includes("renaiss.xyz")) {
+            cardNameEl.textContent = "Navigate to Renaiss.xyz";
+            return;
+        }
+        const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
+        if (response && (response.rawTitle || response.name)) {
+            cardNameEl.textContent = response.name || response.rawTitle;
+            // Pre-fetch exchange rate (non-blocking)
+            getExchangeRate();
+            // Run SNKRDUNK and PriceCharting searches in parallel
+            const identity = refineSearchQuery(response);
+            searchSnkrdunk(response);
+            fetchPriceChartingData(identity);
+        } else {
+            cardNameEl.textContent = "Card not found";
+        }
+    } catch (error) {
+        console.error("Popup Init Error:", error);
     }
 
     function refineSearchQuery(metadata) {
@@ -96,10 +96,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 language: lang,
                 isOnePiece,
                 tcgKeyword,
-                smartQuery: `${tcgKeyword} ${cleanName} ${metadata.number} ${setCode}`.replace(/\s+/g, ' ').trim(),
-                preciseQuery: `${setCode} ${metadata.number}`.trim(),
-                leanQuery: `${cleanName} ${metadata.number}`.trim(),
-                setQuery: `${setCode} ${metadata.number}`.trim()
+                smartQuery: `${tcgKeyword} ${cleanName} ${idRaw} ${setCode}`.replace(/\s+/g, ' ').trim(),
+                preciseQuery: `${setCode} ${idRaw}`.trim(),
+                leanQuery: `${cleanName} ${idRaw}`.trim(),
+                setQuery: `${setCode} ${idRaw}`.trim()
             };
         }
 
@@ -156,53 +156,70 @@ document.addEventListener('DOMContentLoaded', async () => {
         function scoreProduct(p, ident) {
             let score = 0;
             const pname = p.name.toUpperCase();
-            const normPname = pname.replace(/[^A-Z0-9]/g, '');
-            const targetNo = ident.idRaw ? ident.idRaw.replace(/[^A-Z0-9]/g, '') : "";
+            const targetNo = ident.idRaw ? ident.idRaw.replace(/[^0-9]/g, '') : "";
             const paddedNo = ident.paddedNumber || targetNo.padStart(3, '0');
 
-            // 1. Number Matching (highest weight)
-            if (targetNo) {
+            // CRITICAL: Extract card number from SNKRDUNK bracket format
+            // e.g., "Mew AR[s12a 183/172]" → bracketNum="183", bracketSet="S12A"
+            const bracketMatch = pname.match(/\[([^\]]*?)(\d+)\s*\/\s*\d+\]/);
+            const bracketNum = bracketMatch ? bracketMatch[2] : null;
+            const bracketSet = bracketMatch ? bracketMatch[1].trim().replace(/\s+/g, '').toUpperCase() : null;
+
+            // PRE-BRACKET name (the actual card name, before "[")
+            const preBracket = pname.split('[')[0].trim();
+            // Strip rarity suffixes for cleaner name matching
+            const cleanPName = preBracket.replace(/\b(AR|SAR|SR|UR|HR|RRR|RR|R|U|C|P|PROMO|HOLO|EX|GX|V|VSTAR|VMAX)\b/g, '').replace(/\s+/g, ' ').trim();
+
+            // 1. STRICT NUMBER MATCHING via bracket extraction
+            if (targetNo && bracketNum) {
+                const targetInt = parseInt(targetNo, 10);
+                const bracketInt = parseInt(bracketNum, 10);
+                if (targetInt === bracketInt) {
+                    score += 100; // Strong match: bracket number matches
+                } else {
+                    return -1000; // DISQUALIFY: bracket number doesn't match
+                }
+            } else if (targetNo) {
+                // No bracket found — fallback to fuzzy matching
                 const idRegex = new RegExp(`(?<!\\d)${targetNo}(?!\\d)`);
-                if (idRegex.test(pname) || pname.includes(`[${targetNo}]`) || pname.includes(`${paddedNo}]`)) {
-                    score += 50;
-                    if (ident.idRaw.includes('/') && pname.includes(ident.idRaw)) score += 15;
-                } else if (normPname.includes(paddedNo) || normPname.includes(targetNo)) {
-                    score += 15;
+                if (idRegex.test(pname)) {
+                    score += 30;
+                } else {
+                    score += 5; // Very weak match
                 }
             }
 
-            // 2. Subject Exactness (with normalization for dots, rarity suffixes)
-            const targetSubject = (ident.subject || '').toUpperCase();
+            // 2. SET CODE MATCHING (from bracket)
+            if (ident.setMarker && bracketSet) {
+                const targetSet = ident.setMarker.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                if (bracketSet.includes(targetSet) || targetSet.includes(bracketSet)) {
+                    score += 50; // Set code from bracket matches
+                }
+            }
+
+            // 3. NAME MATCHING (using pre-bracket name)
+            const targetSubject = (ident.subject || '').toUpperCase().replace(/\s+(EX|GX|V|VSTAR|VMAX)\s*$/i, '').trim();
             const targetNormalized = targetSubject.replace(/[^A-Z0-9]/g, '');
+            const pNormalized = cleanPName.replace(/[^A-Z0-9]/g, '');
 
-            let pSubject = pname.split('[')[0].trim();
-            // Strip common rarity suffixes for cleaner matching
-            pSubject = pSubject.replace(/\b(AR|SAR|SR|UR|HR|RRR|RR|R|U|C|P|PROMO|HOLO)\b/g, '').trim();
-            const pNormalized = pSubject.replace(/[^A-Z0-9]/g, '');
-
-            if (targetSubject) {
-                if (pSubject === targetSubject || pNormalized === targetNormalized) {
-                    score += 70; // Exact match bonus
-                } else if (pNormalized.includes(targetNormalized)) {
-                    score += 20;
-                    // Short name penalty: prevent "Mew" matching "Mewtwo"
-                    if (targetNormalized.length <= 4 && pNormalized.length > targetNormalized.length + 1) {
-                        score -= 50;
-                    }
+            if (targetNormalized && pNormalized) {
+                if (pNormalized === targetNormalized) {
+                    score += 80; // Exact name match
+                } else if (targetNormalized.length >= 4 && pNormalized.includes(targetNormalized)) {
+                    score += 40; // Substring match (safe for longer names)
+                } else if (targetNormalized.length < 4 && pNormalized === targetNormalized) {
+                    score += 80; // Short exact match only
+                } else {
+                    // Check individual significant words
+                    const words = targetSubject.split(/\s+/).filter(w => w.length > 2);
+                    const matched = words.filter(w => cleanPName.includes(w));
+                    score += matched.length * 10;
                 }
             }
 
-            // 3. Set Matching
-            if (ident.setMarker) {
-                const setTerms = ident.setMarker.toUpperCase().split(/\s+/).filter(w => w.length >= 3);
-                setTerms.forEach(t => {
-                    if (pname.includes(t)) score += 30;
-                });
-            }
-
-            // 4. Year & Language
-            if (ident.year && pname.includes(ident.year)) score += 15;
-            if (ident.language && (pname.includes(ident.language.toUpperCase()) || pname.includes('JP'))) score += 15;
+            // 4. Year & Language (minor bonuses)
+            if (ident.year && pname.includes(ident.year)) score += 10;
+            if (ident.language && pname.includes(ident.language.toUpperCase())) score += 5;
 
             // 5. Special cards
             if ((ident.subject || '').toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
