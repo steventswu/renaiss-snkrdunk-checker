@@ -105,11 +105,9 @@ function getCardMetadata() {
 
   // 3. Fallback: Parse the title if metadata still empty
   if (!metadata.name && rawTitle) {
-    // Title structure is often: [GRADER] [GRADE] [YEAR] [LANGUAGE] [SET] #[NUMBER] [NAME]
-    // Example: PSA 10 Gem Mint 2008 Pokemon Japanese Stormfront #026 Raichu Lv.X-Holo
-    const parts = rawTitle.split(' ');
+    // Title structure: [GRADER] [GRADE_WORDS] [YEAR] [TCG] [LANG] [SET_NAME] #[NUMBER] [CARD_NAME]
+    // Example: "PSA 10 Gem Mint 2022 Pokemon Japanese Sword & Shield Vstar Universe #183 Mew"
 
-    // Simple heuristics
     const yearMatch = rawTitle.match(/\b(19|20)\d{2}\b/);
     if (yearMatch) metadata.year = yearMatch[0];
 
@@ -119,9 +117,32 @@ function getCardMetadata() {
     const langMatch = rawTitle.match(/\b(Japanese|English|Korean|Chinese)\b/i);
     if (langMatch) metadata.language = langMatch[0];
 
-    // Grader (PSA, BGS, CGC)
     const graderMatch = rawTitle.match(/\b(PSA|BGS|CGC)\b/i);
     if (graderMatch) metadata.grader = graderMatch[0];
+
+    // Extract CARD NAME: everything after "#NUMBER "
+    if (numMatch) {
+      const hashPos = rawTitle.indexOf('#' + numMatch[1]);
+      const afterNumber = rawTitle.substring(hashPos + numMatch[1].length + 1).trim();
+      if (afterNumber) {
+        metadata.name = afterNumber;
+      }
+    }
+
+    // Extract SET NAME: text between language/Pokemon and #NUMBER
+    if (numMatch) {
+      const hashPos = rawTitle.indexOf('#' + numMatch[1]);
+      const beforeNumber = rawTitle.substring(0, hashPos).trim();
+      let setCandidate = beforeNumber
+        .replace(/\b(PSA|BGS|CGC)\s*\d+\s*(Gem\s*Mint|Mint|Near\s*Mint|Excellent)?/gi, '')
+        .replace(/\b(19|20)\d{2}\b/g, '')
+        .replace(/\b(Pokemon|One Piece)\b/gi, '')
+        .replace(/\b(Japanese|English|Korean|Chinese)\b/gi, '')
+        .replace(/\s+/g, ' ').trim();
+      if (setCandidate && setCandidate.length > 1) {
+        metadata.set = setCandidate;
+      }
+    }
   }
 
   console.log("Extracted Card Metadata:", metadata);

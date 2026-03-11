@@ -18,6 +18,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
+    // Shared price parsing utility
+    function parsePrice(val) {
+        if (!val) return 0;
+        const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
+        return isNaN(num) ? 0 : num;
+    }
+
+    // Session-cached exchange rate (fetched once)
+    let _cachedJpyRate = null;
+    async function getExchangeRate() {
+        if (_cachedJpyRate !== null) return _cachedJpyRate;
+        try {
+            const resp = await fetch('https://open.er-api.com/v6/latest/USD');
+            const data = await resp.json();
+            _cachedJpyRate = data.rates?.JPY || 150.0;
+            console.log(`[FX] Live rate fetched: 1 USD = ¥${_cachedJpyRate}`);
+        } catch (e) {
+            console.warn('[FX] Failed to fetch live rate, using fallback', e);
+            _cachedJpyRate = 150.0;
+        }
+        return _cachedJpyRate;
+    }
+
     try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (!tab || !tab.url || !tab.url.includes("renaiss.xyz")) {
@@ -27,7 +50,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const response = await chrome.tabs.sendMessage(tab.id, { action: "getCardMetadata" });
         if (response && (response.rawTitle || response.name)) {
             cardNameEl.textContent = response.name || response.rawTitle;
+            // Pre-fetch exchange rate (non-blocking)
+            getExchangeRate();
+            // Run SNKRDUNK and PriceCharting searches in parallel
+            const identity = refineSearchQuery(response);
             searchSnkrdunk(response);
+            fetchPriceChartingData(identity);
         } else {
             cardNameEl.textContent = "Card not found";
         }
@@ -36,30 +64,46 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function refineSearchQuery(metadata) {
-        // If we have structured metadata, use it to build a super precise query
         if (metadata.name && metadata.number) {
             const cleanName = metadata.name.replace(/Lv\.X/g, '').trim();
             const setMarker = metadata.set || "";
             const year = metadata.year || "";
             const lang = metadata.language || "Japanese";
 
+            // Set code mapping for better SNKRDUNK matching
+            let setCode = setMarker;
+            if (setMarker.includes("Universe")) setCode = "s12a";
+            if (setMarker.includes("151")) setCode = "sv2a";
+
+            // TCG detection: One Piece cards don't need "Pokemon" keyword
+            const rawTitle = (metadata.rawTitle || "").toUpperCase();
+            const isOnePiece = rawTitle.includes("ONE PIECE") || setMarker.toUpperCase().includes("ONE PIECE") ||
+                /^(OP|ST)\d{2}/.test(setMarker.toUpperCase());
+            const tcgKeyword = isOnePiece ? "" : "Pokemon";
+
+            // Pad number to 3 digits (SNKRDUNK standard)
+            const idRaw = metadata.number.replace('#', '').trim();
+            const digitsOnly = idRaw.replace(/[^0-9]/g, '');
+            const paddedNumber = digitsOnly.padStart(3, '0');
+
             return {
-                idRaw: metadata.number.replace('#', '').trim(),
+                idRaw,
+                paddedNumber,
                 fullId: metadata.number,
-                subject: metadata.name,
-                setMarker: setMarker,
-                year: year,
+                subject: cleanName,
+                setMarker: setCode.toUpperCase(),
+                year,
                 language: lang,
-                // Primary query: Set + Number + Name
-                smartQuery: `${year} Pokemon ${lang} ${metadata.number} ${cleanName}`.replace(/\s+/g, ' ').trim(),
-                // Ultra Precise: Set + Number
-                preciseQuery: `${setMarker} ${metadata.number}`.trim(),
-                leanQuery: `${cleanName} ${metadata.number}`.trim(),
-                setQuery: `${setMarker} ${metadata.number}`.trim()
+                isOnePiece,
+                tcgKeyword,
+                smartQuery: `${tcgKeyword} ${cleanName} ${idRaw} ${setCode}`.replace(/\s+/g, ' ').trim(),
+                preciseQuery: `${setCode} ${idRaw}`.trim(),
+                leanQuery: `${cleanName} ${idRaw}`.trim(),
+                setQuery: `${setCode} ${idRaw}`.trim()
             };
         }
 
-        // Fallback to old parsing if metadata is incomplete
+        // Fallback parsing for incomplete metadata
         const title = metadata.rawTitle || "";
         let cleaned = title.replace(/\b(PSA|PSA10|Gem|Mint|Near|NearMint|Excellent|Grader|Authentic|CGC|BGS|10|9|8)\b/gi, '');
         cleaned = cleaned.replace(/\b(Trading\s*Card\s*Game|TCG|Card\s*Pack|Edition|Deck)\b/gi, '');
@@ -71,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const idMatch = title.match(/(#?\d+[\/\-]\d+|#\d+)/);
         const fullId = idMatch ? idMatch[0] : "";
         const idRaw = fullId.replace('#', '').trim();
+        const paddedNumber = idRaw.replace(/[^0-9]/g, '').padStart(3, '0');
 
         const setCodeMatch = title.match(/\b([A-Z]{1,4}(?:\d+)?(?:\-[A-Z]+)?)\b/g) || [];
         const setMarker = setCodeMatch.find(m => !['PSA', 'TCG', 'GEM', 'CGC', 'BGS', 'USA', '2023'].includes(m.toUpperCase())) || "";
@@ -81,6 +126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         return {
             idRaw,
+            paddedNumber,
             fullId,
             subject,
             setMarker: setMarker.toUpperCase(),
@@ -110,37 +156,73 @@ document.addEventListener('DOMContentLoaded', async () => {
         function scoreProduct(p, ident) {
             let score = 0;
             const pname = p.name.toUpperCase();
-            const normPname = pname.replace(/[^A-Z0-9]/g, '');
-            const targetNo = ident.idRaw ? ident.idRaw.replace(/[^A-Z0-9]/g, '') : "";
+            const targetNo = ident.idRaw ? ident.idRaw.replace(/[^0-9]/g, '') : "";
+            const paddedNo = ident.paddedNumber || targetNo.padStart(3, '0');
 
-            if (targetNo) {
-                // Precise number matching
+            // CRITICAL: Extract card number from SNKRDUNK bracket format
+            // e.g., "Mew AR[s12a 183/172]" → bracketNum="183", bracketSet="S12A"
+            const bracketMatch = pname.match(/\[([^\]]*?)(\d+)\s*\/\s*\d+\]/);
+            const bracketNum = bracketMatch ? bracketMatch[2] : null;
+            const bracketSet = bracketMatch ? bracketMatch[1].trim().replace(/\s+/g, '').toUpperCase() : null;
+
+            // PRE-BRACKET name (the actual card name, before "[")
+            const preBracket = pname.split('[')[0].trim();
+            // Strip rarity suffixes for cleaner name matching
+            const cleanPName = preBracket.replace(/\b(AR|SAR|SR|UR|HR|RRR|RR|R|U|C|P|PROMO|HOLO|EX|GX|V|VSTAR|VMAX)\b/g, '').replace(/\s+/g, ' ').trim();
+
+            // 1. STRICT NUMBER MATCHING via bracket extraction
+            if (targetNo && bracketNum) {
+                const targetInt = parseInt(targetNo, 10);
+                const bracketInt = parseInt(bracketNum, 10);
+                if (targetInt === bracketInt) {
+                    score += 100; // Strong match: bracket number matches
+                } else {
+                    return -1000; // DISQUALIFY: bracket number doesn't match
+                }
+            } else if (targetNo) {
+                // No bracket found — fallback to fuzzy matching
                 const idRegex = new RegExp(`(?<!\\d)${targetNo}(?!\\d)`);
                 if (idRegex.test(pname)) {
-                    score += 40; // Increased weight for number
-                    if (ident.idRaw.includes('/') && pname.includes(ident.idRaw)) score += 10;
-                } else if (normPname.includes(targetNo)) {
-                    score += 15;
+                    score += 30;
+                } else {
+                    score += 5; // Very weak match
                 }
             }
 
-            // Language score
-            if (ident.language && pname.includes(ident.language.toUpperCase())) score += 20;
-
-            if (ident.setMarker && pname.includes(ident.setMarker.toUpperCase())) score += 25;
-
-            if (ident.year) {
-                if (pname.includes(ident.year)) score += 15;
-                else if (/\b(19|20)\d{2}\b/.test(pname)) score -= 30; // Penalize different years
+            // 2. SET CODE MATCHING (from bracket)
+            if (ident.setMarker && bracketSet) {
+                const targetSet = ident.setMarker.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                if (bracketSet.includes(targetSet) || targetSet.includes(bracketSet)) {
+                    score += 50; // Set code from bracket matches
+                }
             }
 
-            const subjWords = ident.subject.toUpperCase().split(/\s+/).filter(w => w.length > 3);
-            subjWords.forEach(w => {
-                const cleanW = w.replace(/[^A-Z0-9]/g, '');
-                if (cleanW.length > 3 && pname.includes(cleanW)) score += 10;
-            });
+            // 3. NAME MATCHING (using pre-bracket name)
+            const targetSubject = (ident.subject || '').toUpperCase().replace(/\s+(EX|GX|V|VSTAR|VMAX)\s*$/i, '').trim();
+            const targetNormalized = targetSubject.replace(/[^A-Z0-9]/g, '');
+            const pNormalized = cleanPName.replace(/[^A-Z0-9]/g, '');
 
-            if (ident.subject.toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
+            if (targetNormalized && pNormalized) {
+                if (pNormalized === targetNormalized) {
+                    score += 80; // Exact name match
+                } else if (targetNormalized.length >= 4 && pNormalized.includes(targetNormalized)) {
+                    score += 40; // Substring match (safe for longer names)
+                } else if (targetNormalized.length < 4 && pNormalized === targetNormalized) {
+                    score += 80; // Short exact match only
+                } else {
+                    // Check individual significant words
+                    const words = targetSubject.split(/\s+/).filter(w => w.length > 2);
+                    const matched = words.filter(w => cleanPName.includes(w));
+                    score += matched.length * 10;
+                }
+            }
+
+            // 4. Year & Language (minor bonuses)
+            if (ident.year && pname.includes(ident.year)) score += 10;
+            if (ident.language && pname.includes(ident.language.toUpperCase())) score += 5;
+
+            // 5. Special cards
+            if ((ident.subject || '').toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
                 score += 20;
             }
 
@@ -176,16 +258,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const pages = [1, 2, 3, 4];
         const urls = pages.map(p => `https://snkrdunk.com/en/v1/trading-cards/${productId}/used-listings?perPage=50&page=${p}&sortType=latest&isOnlyOnSale=false`);
 
-        // Fetch trading history for stats
-        // Fetch trading history with endpoint templates
-        // Fetch trading history with endpoint templates
-        // Fetch trading history for stats (Strict Streetwears Endpoint)
-        // Fetch trading history for stats (Strict Streetwears Endpoint)
-        // Fetch trading history with robust fallback (Streetwears First)
-        // Fetch ALL trading history with dynamic pagination
-        // OPTIMIZED: Fetch history pages in PARALLEL (max 3 pages = 300 items)
-        // Fetch ALL trading history with dynamic pagination
-        // OPTIMIZED: Parallel batch fetching (no page limit, gets ALL data)
+        // Fetch ALL trading history with parallel batch fetching
         async function fetchTradingHistory(pid) {
             const cleanPid = pid.toString().trim();
             const perPage = 100;
@@ -279,9 +352,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
         const psa10Listings = listings.filter(l => (l.condition || "").toUpperCase().includes("PSA 10"));
 
-        // Currency Conversion Logic
+        // Currency Conversion — detect currency from first price, use live rate for JPY
         const fixedPrefix = "$ ";
-        let conversionRate = 1.0; // Default to 1:1 if already USD
+        let conversionRate = 1.0;
 
         const firstPriceStr = (psa10Listings[0] && psa10Listings[0].price) ||
             (history[0] && history[0].price) ||
@@ -290,23 +363,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (firstPriceStr) {
             const priceStr = firstPriceStr.toString().toUpperCase();
             if (priceStr.includes("HK")) {
-                conversionRate = 0.128; // HKD to USD approx
-                console.log("[DEBUG] Detected HKD. Using rate 0.128");
+                conversionRate = 0.128;
+                console.log("[FX] Detected HKD");
             } else if (priceStr.includes("JP") || priceStr.includes("¥")) {
-                conversionRate = 0.0067; // JPY to USD approx
-                console.log("[DEBUG] Detected JPY. Using rate 0.0067");
+                // Use live rate if available, fallback to hardcoded
+                const jpyRate = _cachedJpyRate || 150.0;
+                conversionRate = 1.0 / jpyRate;
+                console.log(`[FX] Detected JPY. Using rate ${conversionRate.toFixed(6)} (1 USD = ¥${jpyRate})`);
             } else if (priceStr.includes("SG")) {
-                conversionRate = 0.74; // SGD to USD approx
-                console.log("[DEBUG] Detected SGD. Using rate 0.74");
+                conversionRate = 0.74;
+                console.log("[FX] Detected SGD");
             }
         }
 
         const convert = (val) => {
-            if (!val) return "0";
-            const num = parseFloat(val.toString().replace(/[^0-9.]/g, ''));
-            if (isNaN(num)) return "0";
-            const converted = Math.round(num * conversionRate);
-            return converted.toLocaleString();
+            const num = parsePrice(val);
+            if (num === 0) return "0";
+            return Math.round(num * conversionRate).toLocaleString();
         };
 
         // 1. Live Price - prioritize newest available listing (not sold)
@@ -362,7 +435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 3. Stats (High/Low/Avg) - Use HISTORY 30D with OUTLIER FILTERING
         if (soldIn30.length > 0) {
-            const rawPrices = soldIn30.map(h => parseFloat((h.price || "0").toString().replace(/[^0-9.]/g, ''))).filter(p => !isNaN(p) && p > 0);
+            const rawPrices = soldIn30.map(h => parsePrice(h.price)).filter(p => p > 0);
 
             if (rawPrices.length > 0) {
                 // Calculate IQR for robust outlier detection
@@ -454,8 +527,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const weekIdx = weeks.findIndex(w => date >= w.start && date < w.end);
             if (weekIdx !== -1) {
-                const p = parseFloat((item.price || "0").toString().replace(/[^0-9.]/g, ''));
-                if (!isNaN(p)) { weeks[weekIdx].prices.push(p); weeks[weekIdx].volume++; }
+                const p = parsePrice(item.price);
+                if (p > 0) { weeks[weekIdx].prices.push(p); weeks[weekIdx].volume++; }
             }
         });
 
@@ -644,6 +717,177 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // ==================== PRICECHARTING INTEGRATION ====================
+    async function fetchPriceChartingData(identity) {
+        const pcStatusEl = document.getElementById('pc-status');
+        const pcUngradedEl = document.getElementById('pc-ungraded');
+        const pcPsa9El = document.getElementById('pc-psa9');
+        const pcPsa10El = document.getElementById('pc-psa10');
+        const pcLinkEl = document.getElementById('pc-link');
+
+        if (!pcStatusEl) return; // UI not present
+
+        pcStatusEl.textContent = 'Searching...';
+
+        // Build search queries (adapted from Unofficial_Renaiss_Monitor)
+        const name = (identity.subject || '').replace(/\(.*?\)/g, '').trim();
+        const number = (identity.idRaw || '').replace(/^0+/, '') || '0';
+        const numberPadded = number.padStart(3, '0');
+        const setCode = identity.setMarker || '';
+
+        const queries = [];
+        if (setCode) queries.push(`${name} ${setCode} ${number}`);
+        queries.push(`${name} ${number}`);
+        if (numberPadded !== '000') queries.push(`${name} ${numberPadded}`);
+
+        console.log(`[PC] Searching PriceCharting with queries:`, queries);
+
+        let productPageUrl = null;
+
+        // Step 1: Search for the product
+        for (const query of queries) {
+            try {
+                const searchUrl = `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=prices`;
+                console.log(`[PC] Trying: ${searchUrl}`);
+                const resp = await fetch(searchUrl);
+                if (!resp.ok) continue;
+
+                const html = await resp.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+
+                // Check if we landed directly on a product page
+                const productName = doc.querySelector('#product_name');
+                if (productName) {
+                    productPageUrl = resp.url || searchUrl;
+                    console.log(`[PC] Direct product page: ${productPageUrl}`);
+                    // Parse prices directly from this page
+                    const prices = parsePcPrices(doc);
+                    if (prices) {
+                        renderPcPrices(prices, productPageUrl);
+                        return;
+                    }
+                }
+
+                // It's a search results page - find best matching product URL
+                const links = doc.querySelectorAll('table.offer a[href*="/game/"]');
+                if (links.length === 0) {
+                    // Try alternative selector
+                    const altLinks = doc.querySelectorAll('a[href*="/game/"]');
+                    if (altLinks.length === 0) continue;
+                    // Use altLinks
+                    productPageUrl = findBestPcMatch(Array.from(altLinks), name, number, numberPadded, setCode);
+                } else {
+                    productPageUrl = findBestPcMatch(Array.from(links), name, number, numberPadded, setCode);
+                }
+
+                if (productPageUrl) break;
+            } catch (e) {
+                console.warn(`[PC] Search error for "${query}":`, e);
+            }
+        }
+
+        if (!productPageUrl) {
+            pcStatusEl.textContent = 'Not Found';
+            console.log('[PC] No matching product found on PriceCharting');
+            return;
+        }
+
+        // Step 2: Fetch the product page and extract prices
+        try {
+            console.log(`[PC] Fetching product page: ${productPageUrl}`);
+            const resp = await fetch(productPageUrl);
+            if (!resp.ok) {
+                pcStatusEl.textContent = 'Error';
+                return;
+            }
+            const html = await resp.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const prices = parsePcPrices(doc);
+
+            if (prices) {
+                renderPcPrices(prices, productPageUrl);
+            } else {
+                pcStatusEl.textContent = 'No prices';
+            }
+        } catch (e) {
+            console.warn('[PC] Product page fetch error:', e);
+            pcStatusEl.textContent = 'Error';
+        }
+
+        function findBestPcMatch(linkElements, cardName, num, numPadded, set) {
+            const nameSlug = cardName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+            const setSlug = set.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+            let bestBoth = null, bestName = null, bestNum = null;
+
+            for (const link of linkElements) {
+                const href = link.getAttribute('href');
+                if (!href || !href.includes('/game/')) continue;
+                const fullUrl = href.startsWith('http') ? href : `https://www.pricecharting.com${href}`;
+                const slug = href.split('/').pop().toLowerCase();
+
+                const hasName = nameSlug.split('-').filter(w => w.length > 2).some(w => slug.includes(w));
+                const hasNum = slug.includes(num) || slug.includes(numPadded);
+                const hasSet = setSlug && slug.replace(/-/g, '').includes(setSlug);
+
+                if (hasName && hasNum) {
+                    if (!bestBoth || (hasSet && !bestBoth.hasSet)) {
+                        bestBoth = { url: fullUrl, hasSet };
+                    }
+                } else if (hasName && !bestName) {
+                    bestName = fullUrl;
+                } else if (hasNum && !bestNum) {
+                    bestNum = fullUrl;
+                }
+            }
+
+            return bestBoth?.url || bestName || bestNum || null;
+        }
+
+        function parsePcPrices(doc) {
+            // PriceCharting uses these IDs for trading card grades:
+            // Ungraded = td#used_price, PSA 9 = td#graded_price, PSA 10 = td#manual_only_price
+            const extractPrice = (selector) => {
+                const el = doc.querySelector(selector);
+                if (!el) return null;
+                const text = el.textContent.trim();
+                const match = text.match(/\$[\d,]+\.?\d*/);
+                if (!match) return null;
+                return parseFloat(match[0].replace(/[$,]/g, ''));
+            };
+
+            const ungraded = extractPrice('td#used_price .price') || extractPrice('td#used_price');
+            const psa9 = extractPrice('td#graded_price .price') || extractPrice('td#graded_price');
+            const psa10 = extractPrice('td#manual_only_price .price') || extractPrice('td#manual_only_price');
+
+            if (ungraded === null && psa9 === null && psa10 === null) return null;
+
+            return { ungraded, psa9, psa10 };
+        }
+
+        function renderPcPrices(prices, url) {
+            const fmt = (v) => v !== null && v > 0 ? `$ ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
+
+            if (pcUngradedEl) pcUngradedEl.textContent = fmt(prices.ungraded);
+            if (pcPsa9El) pcPsa9El.textContent = fmt(prices.psa9);
+            if (pcPsa10El) pcPsa10El.textContent = fmt(prices.psa10);
+            if (pcStatusEl) pcStatusEl.textContent = '✓ Found';
+            if (pcLinkEl) {
+                pcLinkEl.href = url;
+                pcLinkEl.style.display = 'block';
+                pcLinkEl.onclick = (e) => {
+                    e.preventDefault();
+                    chrome.tabs.create({ url: url });
+                };
+            }
+
+            console.log(`[PC] Prices rendered - Ungraded: ${prices.ungraded}, PSA 9: ${prices.psa9}, PSA 10: ${prices.psa10}`);
+        }
+    }
+    // ==================== END PRICECHARTING ====================
+
     function resetUI() {
         psa10PriceEl.textContent = "...";
         avgPriceEl.textContent = "...";
@@ -655,6 +899,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (psa10PopEl) psa10PopEl.textContent = "...";
         if (totalGradedPopEl) totalGradedPopEl.textContent = "...";
         if (historyListEl) historyListEl.innerHTML = '<div class="history-item loading">Loading history...</div>';
+        // Reset PC section
+        const pcStatusEl = document.getElementById('pc-status');
+        const pcUngradedEl = document.getElementById('pc-ungraded');
+        const pcPsa9El = document.getElementById('pc-psa9');
+        const pcPsa10El = document.getElementById('pc-psa10');
+        const pcLinkEl = document.getElementById('pc-link');
+        if (pcStatusEl) pcStatusEl.textContent = 'Searching...';
+        if (pcUngradedEl) pcUngradedEl.textContent = '--';
+        if (pcPsa9El) pcPsa9El.textContent = '--';
+        if (pcPsa10El) pcPsa10El.textContent = '--';
+        if (pcLinkEl) pcLinkEl.style.display = 'none';
     }
 
     function handleNoMatch(identity) {
