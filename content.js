@@ -58,18 +58,32 @@ function getCardMetadata() {
     language: "",
     grader: "",
     grade: "",
-    serial: ""
+    serial: "",
+    fmvPriceUSD: 0,
+    cleanSerial: ""
   };
 
   // 1. Try to find the "Show More" details/badges in the DOM
   try {
-    const badges = Array.from(document.querySelectorAll('div[class*="flex"][class*="items-center"][class*="gap-"]'));
+    // Renaiss uses both div and span elements for badge containers
+    const badges = Array.from(document.querySelectorAll(
+      'div[class*="flex"][class*="items-center"][class*="gap-"], span[class*="flex"][class*="items-center"][class*="gap-"]'
+    ));
     badges.forEach(b => {
       const text = b.textContent.toUpperCase();
       if (text.includes('GRADER')) metadata.grader = b.textContent.replace(/GRADER/i, '').trim();
       if (text.includes('SERIAL')) metadata.serial = b.textContent.replace(/SERIAL/i, '').trim();
       if (text.includes('GRADE')) metadata.grade = b.textContent.replace(/GRADE/i, '').trim();
     });
+    // Also try searching all visible text for PSA serial pattern
+    if (!metadata.serial) {
+      const allText = document.body?.textContent || '';
+      const psaSerialMatch = allText.match(/PSA\d{6,}/);
+      if (psaSerialMatch) {
+        metadata.serial = psaSerialMatch[0];
+        console.log(`[META] Found serial from body text: ${metadata.serial}`);
+      }
+    }
   } catch (e) { }
 
   // 2. Try to extract from __NEXT_DATA__ (Next.js Hydration API)
@@ -95,6 +109,12 @@ function getCardMetadata() {
             metadata.grader = card.grader || metadata.grader;
             metadata.grade = card.grade || metadata.grade;
             metadata.serial = card.serialNumber || metadata.serial;
+            // Extract FMV price (stored in cents, convert to dollars)
+            if (card.fmvPriceInUSD) {
+              metadata.fmvPriceUSD = parseFloat(card.fmvPriceInUSD) / 100;
+            } else if (card.fmvPrice) {
+              metadata.fmvPriceUSD = parseFloat(card.fmvPrice) / 100;
+            }
           }
         }
       }
@@ -102,6 +122,38 @@ function getCardMetadata() {
   } catch (e) {
     console.log("Error parsing __NEXT_DATA__:", e);
   }
+
+  // 2b. Try RSC streaming data (__next_f chunks) for FMV price
+  if (!metadata.fmvPriceUSD) {
+    try {
+      const scripts = Array.from(document.querySelectorAll('script'));
+      for (const script of scripts) {
+        const text = script.textContent || '';
+        // Look for fmvPriceInUSD in streaming data chunks
+        // Value can be bare number OR quoted string: "fmvPriceInUSD":69200 or "fmvPriceInUSD":"69200"
+        const fmvMatch = text.match(/"fmvPriceInUSD"\s*[:\s,]*"?(\d+)"?/);
+        if (fmvMatch) {
+          metadata.fmvPriceUSD = parseInt(fmvMatch[1], 10) / 100;
+          console.log(`[META] Found FMV in RSC data: $${metadata.fmvPriceUSD} (raw: ${fmvMatch[1]})`);
+          break;
+        }
+      }
+    } catch (e) { }
+  }
+
+  // 2c. Fallback: Try to find FMV from visible DOM text (e.g. "FMV $ 692")
+  if (!metadata.fmvPriceUSD) {
+    try {
+      const bodyText = document.body?.textContent || '';
+      const fmvDomMatch = bodyText.match(/FMV\s*\$\s*([\d,.]+)/);
+      if (fmvDomMatch) {
+        metadata.fmvPriceUSD = parseFloat(fmvDomMatch[1].replace(/,/g, ''));
+        console.log(`[META] Found FMV in DOM text: $${metadata.fmvPriceUSD}`);
+      }
+    } catch (e) { }
+  }
+
+  console.log(`[META] Final FMV: $${metadata.fmvPriceUSD}, Serial: ${metadata.serial}, CleanSerial: ${metadata.cleanSerial}`);
 
   // 3. Fallback: Parse the title if metadata still empty
   if (!metadata.name && rawTitle) {
@@ -142,6 +194,14 @@ function getCardMetadata() {
       if (setCandidate && setCandidate.length > 1) {
         metadata.set = setCandidate;
       }
+    }
+  }
+
+  // Extract clean serial number (numeric only, e.g. "PSA78559837" → "78559837")
+  if (metadata.serial) {
+    const serialDigits = metadata.serial.replace(/[^0-9]/g, '');
+    if (serialDigits.length >= 6) {
+      metadata.cleanSerial = serialDigits;
     }
   }
 

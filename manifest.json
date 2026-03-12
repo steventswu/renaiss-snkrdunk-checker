@@ -13,7 +13,8 @@
     "*://*.snkrdunk.com/*",
     "*://*.gemrate.com/*",
     "*://*.pricecharting.com/*",
-    "*://open.er-api.com/*"
+    "*://open.er-api.com/*",
+    "*://*.psacard.com/*"
   ],
   "action": {},
   "background": {

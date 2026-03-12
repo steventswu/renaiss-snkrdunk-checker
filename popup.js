@@ -96,6 +96,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 language: lang,
                 isOnePiece,
                 tcgKeyword,
+                fmvPriceUSD: metadata.fmvPriceUSD || 0,
+                cleanSerial: metadata.cleanSerial || '',
+                variantKeywords: [],  // populated later by PSA cert lookup
                 smartQuery: `${tcgKeyword} ${cleanName} ${idRaw} ${setCode}`.replace(/\s+/g, ' ').trim(),
                 preciseQuery: `${setCode} ${idRaw}`.trim(),
                 leanQuery: `${cleanName} ${idRaw}`.trim(),
@@ -132,15 +135,103 @@ document.addEventListener('DOMContentLoaded', async () => {
             setMarker: setMarker.toUpperCase(),
             year,
             language,
+            fmvPriceUSD: metadata.fmvPriceUSD || 0,
+            cleanSerial: metadata.cleanSerial || '',
+            variantKeywords: [],
             smartQuery: `${year} Pokemon ${language} ${fullId} ${leanSubject}`.replace(/\s+/g, ' ').trim(),
             leanQuery: `${leanSubject} ${idRaw}`.trim(),
             setQuery: `${setMarker} ${idRaw}`.trim()
         };
     }
 
+    // ==================== PSA CERT VARIANT LOOKUP ====================
+    // PSA label terms → SNKRDUNK product name terms
+    const VARIANT_MAPPING = {
+        'MASTER BALL': 'MASTER BALL',
+        'MONSTER BALL': 'MONSTER BALL',
+        'REVERSE HOLO': 'MIRROR',       // PSA "REVERSE HOLO" = SNKRDUNK "Mirror" for JP cards
+        'HOLO RARE': 'HOLO',
+        '1ST EDITION': '1ST EDITION',
+        'FULL ART': 'FULL ART',
+        'ALT ART': 'ALT ART',
+    };
+
+    async function fetchPSACertLabel(serial) {
+        if (!serial) return [];
+        console.log(`[PSA CERT] Looking up cert #${serial}`);
+        try {
+            const resp = await fetch(`https://www.psacard.com/cert/${serial}`, {
+                signal: AbortSignal.timeout(5000)
+            });
+            if (!resp.ok) {
+                console.log(`[PSA CERT] HTTP ${resp.status}`);
+                return [];
+            }
+            const html = await resp.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            // PSA cert page shows card description in a specific table/field
+            const descEl = doc.querySelector('.card-description, .cert-description, td.desc, h4');
+            const descText = descEl ? descEl.textContent.trim().toUpperCase() : '';
+
+            // Also try to get description from all table cells
+            let fullText = descText;
+            if (!fullText) {
+                const allCells = doc.querySelectorAll('td, .detail-value, span');
+                for (const cell of allCells) {
+                    const t = cell.textContent.trim().toUpperCase();
+                    if (t.includes('MASTER BALL') || t.includes('REVERSE HOLO') || t.includes('MONSTER BALL')) {
+                        fullText = t;
+                        break;
+                    }
+                }
+            }
+
+            // Also check the full body text for variant keywords
+            if (!fullText) {
+                const bodyText = doc.body ? doc.body.textContent.toUpperCase() : '';
+                for (const [psaTerm] of Object.entries(VARIANT_MAPPING)) {
+                    if (bodyText.includes(psaTerm)) {
+                        fullText = bodyText;
+                        break;
+                    }
+                }
+            }
+
+            if (!fullText) {
+                console.log('[PSA CERT] No variant keywords found in page');
+                return [];
+            }
+
+            // Extract variant keywords present in the page
+            const found = [];
+            for (const [psaTerm, snkrTerm] of Object.entries(VARIANT_MAPPING)) {
+                if (fullText.includes(psaTerm)) {
+                    found.push(snkrTerm);
+                    console.log(`[PSA CERT] Found variant: "${psaTerm}" → SNKRDUNK: "${snkrTerm}"`);
+                }
+            }
+            return found;
+        } catch (e) {
+            console.log(`[PSA CERT] Lookup failed (expected if Cloudflare blocks):`, e.message || e);
+            return [];
+        }
+    }
+
     async function searchSnkrdunk(metadata) {
         const identity = refineSearchQuery(metadata);
         resetUI();
+
+        // Attempt to enrich identity with PSA cert variant keywords (non-blocking with timeout)
+        if (identity.cleanSerial) {
+            try {
+                identity.variantKeywords = await fetchPSACertLabel(identity.cleanSerial);
+            } catch (e) {
+                console.log('[PSA CERT] Enrichment failed, continuing without variant data');
+            }
+        }
+        console.log(`[SEARCH] Variant keywords: [${identity.variantKeywords.join(', ')}], FMV: $${identity.fmvPriceUSD}`);
 
         async function fetchProducts(query) {
             if (!query || query.length < 2) return [];
@@ -224,6 +315,46 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 5. Special cards
             if ((ident.subject || '').toUpperCase().includes('LV.X') && pname.includes('LV.X')) {
                 score += 20;
+            }
+
+            // 6. VARIANT KEYWORD MATCHING (from PSA cert label)
+            if (ident.variantKeywords && ident.variantKeywords.length > 0) {
+                const hasVariantMatch = ident.variantKeywords.some(vk => pname.includes(vk.toUpperCase()));
+                if (hasVariantMatch) {
+                    score += 200; // Strong bonus: variant keyword matches product name
+                    console.log(`[SCORE] +200 variant match for "${p.name}"`);
+                } else {
+                    // Check if this product has ANY variant suffix (colon in pre-bracket = variant)
+                    const hasVariantSuffix = preBracket.includes(':');
+                    if (hasVariantSuffix) {
+                        score -= 500; // Wrong variant — disqualify
+                        console.log(`[SCORE] -500 wrong variant for "${p.name}"`);
+                    } else {
+                        // No variant suffix = regular/base card — penalize but don't fully disqualify
+                        score -= 100;
+                        console.log(`[SCORE] -100 base variant for "${p.name}" (expected variant)`);
+                    }
+                }
+            }
+
+            // 7. FMV PRICE PROXIMITY (STRONG signal when variants have drastically different prices)
+            // SNKRDUNK minPrice is the raw listing price; FMV is the PSA 10 fair market value
+            // For same-number variants, this is often the ONLY way to pick the right one
+            if (ident.fmvPriceUSD > 0 && p.minPrice) {
+                const productPrice = parseFloat(p.minPrice) || 0;
+                if (productPrice > 0) {
+                    const ratio = productPrice / ident.fmvPriceUSD;
+                    console.log(`[SCORE] FMV check for "${p.name}": minPrice=$${productPrice}, FMV=$${ident.fmvPriceUSD}, ratio=${ratio.toFixed(4)}`);
+                    if (ratio >= 0.05 && ratio <= 10.0) {
+                        // Price is in a plausible range of FMV — strong bonus
+                        score += 150;
+                        console.log(`[SCORE] +150 FMV proximity for "${p.name}"`);
+                    } else if (ratio < 0.05) {
+                        // Product price is drastically below FMV — very likely wrong variant
+                        score -= 200;
+                        console.log(`[SCORE] -200 FMV mismatch for "${p.name}" (way too cheap vs FMV)`);
+                    }
+                }
             }
 
             return score;
