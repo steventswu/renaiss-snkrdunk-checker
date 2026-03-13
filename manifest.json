@@ -14,7 +14,8 @@
     "*://*.gemrate.com/*",
     "*://*.pricecharting.com/*",
     "*://open.er-api.com/*",
-    "*://*.psacard.com/*"
+    "*://*.psacard.com/*",
+    "https://r.jina.ai/*"
   ],
   "action": {},
   "background": {

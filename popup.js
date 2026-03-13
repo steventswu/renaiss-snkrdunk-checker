@@ -159,62 +159,58 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function fetchPSACertLabel(serial) {
         if (!serial) return [];
         console.log(`[PSA CERT] Looking up cert #${serial}`);
-        try {
-            const resp = await fetch(`https://www.psacard.com/cert/${serial}`, {
-                signal: AbortSignal.timeout(5000)
-            });
-            if (!resp.ok) {
-                console.log(`[PSA CERT] HTTP ${resp.status}`);
-                return [];
-            }
-            const html = await resp.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-
-            // PSA cert page shows card description in a specific table/field
-            const descEl = doc.querySelector('.card-description, .cert-description, td.desc, h4');
-            const descText = descEl ? descEl.textContent.trim().toUpperCase() : '';
-
-            // Also try to get description from all table cells
-            let fullText = descText;
-            if (!fullText) {
-                const allCells = doc.querySelectorAll('td, .detail-value, span');
-                for (const cell of allCells) {
-                    const t = cell.textContent.trim().toUpperCase();
-                    if (t.includes('MASTER BALL') || t.includes('REVERSE HOLO') || t.includes('MONSTER BALL')) {
-                        fullText = t;
-                        break;
-                    }
-                }
-            }
-
-            // Also check the full body text for variant keywords
-            if (!fullText) {
-                const bodyText = doc.body ? doc.body.textContent.toUpperCase() : '';
-                for (const [psaTerm] of Object.entries(VARIANT_MAPPING)) {
-                    if (bodyText.includes(psaTerm)) {
-                        fullText = bodyText;
-                        break;
-                    }
-                }
-            }
-
-            if (!fullText) {
-                console.log('[PSA CERT] No variant keywords found in page');
-                return [];
-            }
-
-            // Extract variant keywords present in the page
+        
+        async function extractFromText(text) {
+            if (!text) return [];
+            const upper = text.toUpperCase();
             const found = [];
             for (const [psaTerm, snkrTerm] of Object.entries(VARIANT_MAPPING)) {
-                if (fullText.includes(psaTerm)) {
+                if (upper.includes(psaTerm)) {
                     found.push(snkrTerm);
-                    console.log(`[PSA CERT] Found variant: "${psaTerm}" → SNKRDUNK: "${snkrTerm}"`);
                 }
             }
             return found;
+        }
+
+        try {
+            // 1. Try DIRECT fetch (often blocked by Cloudflare)
+            const resp = await fetch(`https://www.psacard.com/cert/${serial}`, {
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (resp.ok) {
+                const html = await resp.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const bodyText = doc.body ? doc.body.textContent : '';
+                const keywords = await extractFromText(bodyText);
+                if (keywords.length > 0) {
+                    console.log(`[PSA CERT] Found direct keywords: ${keywords.join(', ')}`);
+                    return keywords;
+                }
+            } else {
+                console.log(`[PSA CERT] Direct lookup failed (HTTP ${resp.status}), trying Jina AI bypass...`);
+            }
+
+            // 2. Try JINA AI bypass (can often bypass Cloudflare)
+            const jinaUrl = `https://r.jina.ai/https://www.psacard.com/cert/${serial}`;
+            const jinaResp = await fetch(jinaUrl, {
+                signal: AbortSignal.timeout(8000)
+            });
+
+            if (jinaResp.ok) {
+                const jinaText = await jinaResp.text();
+                const keywords = await extractFromText(jinaText);
+                if (keywords.length > 0) {
+                    console.log(`[PSA CERT] Found keywords via Jina: ${keywords.join(', ')}`);
+                    return keywords;
+                }
+            }
+
+            console.log('[PSA CERT] No variant keywords found via direct or Jina lookup');
+            return [];
         } catch (e) {
-            console.log(`[PSA CERT] Lookup failed (expected if Cloudflare blocks):`, e.message || e);
+            console.log(`[PSA CERT] Error during lookup:`, e.message || e);
             return [];
         }
     }
