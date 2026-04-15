@@ -69,22 +69,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             const setMarker = metadata.set || "";
             const year = metadata.year || "";
             const lang = metadata.language || "Japanese";
-
             // Set code mapping for better SNKRDUNK matching
             let setCode = setMarker;
             if (setMarker.includes("Universe")) setCode = "s12a";
             if (setMarker.includes("151")) setCode = "sv2a";
+            if (setMarker.toUpperCase().includes("M-P PROMO")) setCode = "M-P";
+            if (setMarker.toUpperCase().includes("S-P PROMO")) setCode = "S-P";
+            if (setMarker.toUpperCase().includes("XY-P PROMO")) setCode = "XY-P";
+            if (setMarker.toUpperCase().includes("BW-P PROMO")) setCode = "BW-P";
+            if (setMarker.toUpperCase().includes("L-P PROMO")) setCode = "L-P";
 
             // TCG detection: One Piece cards don't need "Pokemon" keyword
             const rawTitle = (metadata.rawTitle || "").toUpperCase();
-            const isOnePiece = rawTitle.includes("ONE PIECE") || setMarker.toUpperCase().includes("ONE PIECE") ||
-                /^(OP|ST)\d{2}/.test(setMarker.toUpperCase());
+            const setUpper = setMarker.toUpperCase();
+            const isOnePiece = rawTitle.includes("ONE PIECE") || setUpper.includes("ONE PIECE") ||
+                               /^(OP|ST)\d{2}/.test(setUpper) || /^(OP|ST)\d{2}/.test(rawTitle);
             const tcgKeyword = isOnePiece ? "" : "Pokemon";
 
             // Pad number to 3 digits (SNKRDUNK standard)
             const idRaw = metadata.number.replace('#', '').trim();
             const digitsOnly = idRaw.replace(/[^0-9]/g, '');
             const paddedNumber = digitsOnly.padStart(3, '0');
+
+            // Generate a cleaner smartQuery by avoiding redundant terms
+            const cleanSetName = setCode.replace(/PROMO/gi, '').trim();
+            const smartQuery = `${tcgKeyword} ${cleanName} ${idRaw} ${cleanSetName}`.replace(/\s+/g, ' ').trim();
 
             return {
                 idRaw,
@@ -99,11 +108,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 fmvPriceUSD: metadata.fmvPriceUSD || 0,
                 cleanSerial: metadata.cleanSerial || '',
                 variantKeywords: [],  // populated later by PSA cert lookup
-                smartQuery: `${tcgKeyword} ${cleanName} ${idRaw} ${setCode}`.replace(/\s+/g, ' ').trim(),
-                preciseQuery: `${setCode} ${idRaw}`.trim(),
+                smartQuery: smartQuery,
+                preciseQuery: `${setMarker.includes('PROMO') ? cleanSetName : setCode} ${idRaw}`.trim(),
                 leanQuery: `${cleanName} ${idRaw}`.trim(),
-                setQuery: `${setCode} ${idRaw}`.trim()
+                setQuery: `${setCode} ${idRaw}`.trim(),
+                certQuery: metadata.cleanSerial ? `${metadata.cleanSerial}` : ''
             };
+
         }
 
         // Fallback parsing for incomplete metadata
@@ -140,7 +151,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             variantKeywords: [],
             smartQuery: `${year} Pokemon ${language} ${fullId} ${leanSubject}`.replace(/\s+/g, ' ').trim(),
             leanQuery: `${leanSubject} ${idRaw}`.trim(),
-            setQuery: `${setMarker} ${idRaw}`.trim()
+            setQuery: `${setMarker} ${idRaw}`.trim(),
+            certQuery: metadata.cleanSerial ? `${metadata.cleanSerial}` : ''
         };
     }
 
@@ -357,9 +369,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // SPEED OPTIMIZATION: Run primary queries in parallel
-        const queries = [identity.preciseQuery, identity.smartQuery, identity.leanQuery, identity.idRaw].filter(q => q && q.length >= 2);
+        // Priority: Cert Query > Precise Query > Smart Query > Lean Query
+        const queries = [identity.certQuery, identity.preciseQuery, identity.smartQuery, identity.leanQuery, identity.idRaw]
+            .filter(q => q && q.length >= 2);
+        
+        let allProducts = [];
         const resultsArray = await Promise.all(queries.map(fetchProducts));
-        let allProducts = resultsArray.flat();
+        allProducts = resultsArray.flat();
 
         // If no products found, try the smartQuery fallback
         if (allProducts.length === 0) {
@@ -751,10 +767,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function fetchGemratePop(identity) {
         if (!psa10PopEl || !totalGradedPopEl) return;
 
-        // Construct query: Include setMarker if available for better accuracy
-        const queryParts = [identity.year, "Pokemon", identity.language, identity.setMarker, identity.fullId, identity.subject];
-        const query = queryParts.filter(p => p && p.length > 0).join(' ').replace(/\s+/g, ' ').trim();
-
+        // Construct query: Leaner query for Gemrate (Subject + Number + SetCode)
+        // Strip special characters like # / : and noise keywords for better matching
+        const cleanSubject = (identity.subject || '').replace(/[#/:()]/g, '').trim();
+        const cleanId = (identity.idRaw || '').replace('#', '').trim();
+        const setCode = (identity.setMarker || '').replace(/[^A-Z0-9]/gi, '').trim();
+        
+        const query = `${cleanSubject} ${cleanId} ${setCode}`.replace(/\s+/g, ' ').trim();
+        
         console.log(`[DEBUG] Fetching Pop from Gemrate for: ${query}`);
 
         try {
@@ -762,11 +782,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             const searchUrl = 'https://www.gemrate.com/universal-search-query';
             const searchResp = await fetch(searchUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Accept': 'application/json',
+                    'Referer': 'https://www.gemrate.com/'
+                },
                 body: JSON.stringify({ query: query })
             });
 
-            if (!searchResp.ok) throw new Error('Gemrate search failed');
+            if (!searchResp.ok) {
+                const errorText = await searchResp.text().catch(() => 'No response body');
+                throw new Error(`Gemrate search failed: ${searchResp.status} - ${errorText}`);
+            }
             const searchData = await searchResp.json();
 
             const results = Array.isArray(searchData) ? searchData : (searchData.results || []);
@@ -861,10 +888,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const number = (identity.idRaw || '').replace(/^0+/, '') || '0';
         const numberPadded = number.padStart(3, '0');
         const setCode = identity.setMarker || '';
+        const language = identity.language || 'Japanese';
 
         const queries = [];
-        if (setCode) queries.push(`${name} ${setCode} ${number}`);
-        queries.push(`${name} ${number}`);
+        if (setCode) queries.push(`${language} ${name} ${setCode} ${number}`);
+        queries.push(`${language} ${name} ${number}`);
         if (numberPadded !== '000') queries.push(`${name} ${numberPadded}`);
 
         console.log(`[PC] Searching PriceCharting with queries:`, queries);
@@ -958,10 +986,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const hasName = nameSlug.split('-').filter(w => w.length > 2).some(w => slug.includes(w));
                 const hasNum = slug.includes(num) || slug.includes(numPadded);
                 const hasSet = setSlug && slug.replace(/-/g, '').includes(setSlug);
+                const hasLang = slug.includes((identity.language || 'japanese').toLowerCase());
 
                 if (hasName && hasNum) {
-                    if (!bestBoth || (hasSet && !bestBoth.hasSet)) {
-                        bestBoth = { url: fullUrl, hasSet };
+                    if (!bestBoth || (hasLang && !bestBoth.hasLang) || (hasSet && !bestBoth.hasSet)) {
+                        bestBoth = { url: fullUrl, hasSet, hasLang };
                     }
                 } else if (hasName && !bestName) {
                     bestName = fullUrl;

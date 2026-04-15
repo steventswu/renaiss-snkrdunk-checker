@@ -23,6 +23,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 function findCardTitle() {
   const candidates = [
+    'span.mt-1.text-xl.text-white.tracking-\\[0\\.4px\\]',
     'h1',
     'span.text-2xl.font-semibold.text-white',
     '.text-2xl.font-semibold',
@@ -34,7 +35,8 @@ function findCardTitle() {
     const elements = Array.from(document.querySelectorAll(selector));
     const visible = elements.find(el => {
       const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     });
 
     if (visible) {
@@ -63,24 +65,47 @@ function getCardMetadata() {
     cleanSerial: ""
   };
 
-  // 1. Try to find the "Show More" details/badges in the DOM
+  // 0. Visual Identification: Check image URLs for Certification Numbers
+  extractMetadataFromImages(metadata);
+
+  // 1. New Layout: Scrape from the "Card Details" grid
   try {
-    // Renaiss uses both div and span elements for badge containers
-    const badges = Array.from(document.querySelectorAll(
-      'div[class*="flex"][class*="items-center"][class*="gap-"], span[class*="flex"][class*="items-center"][class*="gap-"]'
-    ));
-    badges.forEach(b => {
-      const text = b.textContent.toUpperCase();
-      if (text.includes('GRADER')) metadata.grader = b.textContent.replace(/GRADER/i, '').trim();
-      if (text.includes('SERIAL')) metadata.serial = b.textContent.replace(/SERIAL/i, '').trim();
-      if (text.includes('GRADE')) metadata.grade = b.textContent.replace(/GRADE/i, '').trim();
-    });
-    // Also try searching all visible text for PSA serial pattern
+    const gridCols = Array.from(document.querySelectorAll('div.grid.grid-cols-\\[auto_1fr\\].gap-x-3.gap-y-1'));
+    if (gridCols.length > 0) {
+      gridCols.forEach(grid => {
+        const rows = Array.from(grid.children);
+        for (let i = 0; i < rows.length; i += 2) {
+          const label = rows[i]?.textContent?.trim()?.toUpperCase();
+          const value = rows[i + 1]?.textContent?.trim();
+          if (!label || !value) continue;
+
+          if (label === 'GRADER') metadata.grader = value;
+          if (label === 'GRADE') metadata.grade = value;
+          if (label === 'SERIAL') metadata.serial = value;
+          if (label === 'SET') metadata.set = value;
+        }
+      });
+    }
+
+    // Fallback: Legacy/Badge structure
+    if (!metadata.grader || !metadata.serial) {
+      const badges = Array.from(document.querySelectorAll(
+        'div[class*="flex"][class*="items-center"][class*="gap-"], span[class*="flex"][class*="items-center"][class*="gap-"]'
+      ));
+      badges.forEach(b => {
+        const text = b.textContent.toUpperCase();
+        if (text.includes('GRADER')) metadata.grader = b.textContent.replace(/GRADER/i, '').trim();
+        if (text.includes('SERIAL')) metadata.serial = b.textContent.replace(/SERIAL/i, '').trim();
+        if (text.includes('GRADE')) metadata.grade = b.textContent.replace(/GRADE/i, '').trim();
+      });
+    }
+
+    // Also try searching all visible text for PSA serial pattern if still missing
     if (!metadata.serial) {
       const allText = document.body?.textContent || '';
-      const psaSerialMatch = allText.match(/PSA\d{6,}/);
+      const psaSerialMatch = allText.match(/PSA\s*(\d{8,})/i) || allText.match(/\b(\d{8,})\b/);
       if (psaSerialMatch) {
-        metadata.serial = psaSerialMatch[0];
+        metadata.serial = psaSerialMatch[1] || psaSerialMatch[0];
         console.log(`[META] Found serial from body text: ${metadata.serial}`);
       }
     }
@@ -131,11 +156,25 @@ function getCardMetadata() {
         const text = script.textContent || '';
         // Look for fmvPriceInUSD in streaming data chunks
         // Value can be bare number OR quoted string: "fmvPriceInUSD":69200 or "fmvPriceInUSD":"69200"
-        const fmvMatch = text.match(/"fmvPriceInUSD"\s*[:\s,]*"?(\d+)"?/);
+        const fmvMatch = text.match(/"fmvPriceInUSD"\s*[:\s,]*"?(\d+)"?/) || text.match(/\\?"fmvPriceInUSD\\?"\s*[:\s,]*\\?"?(\d+)\\?"?/);
         if (fmvMatch) {
           metadata.fmvPriceUSD = parseInt(fmvMatch[1], 10) / 100;
           console.log(`[META] Found FMV in RSC data: $${metadata.fmvPriceUSD} (raw: ${fmvMatch[1]})`);
           break;
+        }
+      }
+    } catch (e) { }
+  }
+
+  // 2c. New Layout: Try to find FMV from the "FMV" badge (often yellow/gold)
+  if (!metadata.fmvPriceUSD) {
+    try {
+      const fmvBadge = document.querySelector('div.bg-\\[\\#fdc600\\]\\/20, div.bg-yellow-400\\/20');
+      if (fmvBadge) {
+        const fmvText = fmvBadge.textContent.replace(/[^0-9.]/g, '');
+        if (fmvText) {
+          metadata.fmvPriceUSD = parseFloat(fmvText);
+          console.log(`[META] Found FMV in Badge: $${metadata.fmvPriceUSD}`);
         }
       }
     } catch (e) { }
@@ -159,6 +198,7 @@ function getCardMetadata() {
   if (!metadata.name && rawTitle) {
     // Title structure: [GRADER] [GRADE_WORDS] [YEAR] [TCG] [LANG] [SET_NAME] #[NUMBER] [CARD_NAME]
     // Example: "PSA 10 Gem Mint 2022 Pokemon Japanese Sword & Shield Vstar Universe #183 Mew"
+    // New Renaiss layout title example: "#020 Pikachu"
 
     const yearMatch = rawTitle.match(/\b(19|20)\d{2}\b/);
     if (yearMatch) metadata.year = yearMatch[0];
@@ -179,6 +219,8 @@ function getCardMetadata() {
       if (afterNumber) {
         metadata.name = afterNumber;
       }
+    } else {
+      metadata.name = rawTitle;
     }
 
     // Extract SET NAME: text between language/Pokemon and #NUMBER
@@ -197,6 +239,36 @@ function getCardMetadata() {
     }
   }
 
+  // 4. PRE-PROCESSING & CLEANING
+  // If year/language still missing, try to extract from Set field
+  if (!metadata.year && metadata.set) {
+    const yrMatch = metadata.set.match(/\b(19|20)\d{2}\b/);
+    if (yrMatch) {
+      metadata.year = yrMatch[0];
+      metadata.set = metadata.set.replace(yrMatch[0], '').trim();
+    }
+  }
+  if (!metadata.language && metadata.set) {
+    const lgMatch = metadata.set.match(/\b(Japanese|English|Korean|Chinese)\b/i);
+    if (lgMatch) {
+      metadata.language = lgMatch[0];
+      metadata.set = metadata.set.replace(new RegExp(lgMatch[0], 'i'), '').trim();
+    }
+  }
+
+  // Clean Name: Strip leading number if redundant
+  if (metadata.name && metadata.number) {
+    const cleanName = metadata.name.replace(new RegExp(`^#?${metadata.number}\\s*`, 'i'), '').trim();
+    if (cleanName) metadata.name = cleanName;
+  }
+
+  // Clean Set: Remove noise keywords for SNKRDUNK/PriceCharting
+  if (metadata.set) {
+    metadata.set = metadata.set
+      .replace(/\b(Pokemon|One Piece|TCG|Trading\s*Card\s*Game)\s*/gi, '')
+      .replace(/\s+/g, ' ').trim();
+  }
+
   // Extract clean serial number (numeric only, e.g. "PSA78559837" → "78559837")
   if (metadata.serial) {
     const serialDigits = metadata.serial.replace(/[^0-9]/g, '');
@@ -206,7 +278,132 @@ function getCardMetadata() {
   }
 
   console.log("Extracted Card Metadata:", metadata);
+  
+  // Inject the "Identify from Photo" button if it's a graded card
+  if (metadata.grader || metadata.serial || metadata.rawTitle.match(/\b(PSA|BGS|CGC)\b/i)) {
+    injectIdentificationUI(metadata);
+  }
+
   return metadata;
+}
+
+/**
+ * PHOTO IDENTIFICATION: Extracts cert numbers from image URLs
+ */
+function extractMetadataFromImages(metadata) {
+  try {
+    const images = Array.from(document.querySelectorAll('img[src]'));
+    for (const img of images) {
+      const src = img.getAttribute('src') || '';
+      // Look for PSA/BGS/CGC prefixes followed by 8+ digits in the URL
+      const certMatch = src.match(/\/(PSA|BGS|CGC)(\d{7,10})\//i) || src.match(/_(PSA|BGS|CGC)(\d{7,10})\./i);
+      if (certMatch) {
+        const grader = certMatch[1].toUpperCase();
+        const serial = certMatch[2];
+        
+        if (!metadata.grader) metadata.grader = grader;
+        if (!metadata.serial) metadata.serial = serial;
+        
+        console.log(`[PHOTO-ID] Found ${grader} Cert in URL: ${serial}`);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error("[PHOTO-ID] Error extracting from images:", e);
+  }
+}
+
+/**
+ * UI: Injects the "Identify from Photo" button
+ */
+function injectIdentificationUI(metadata) {
+  // Avoid duplicate injection
+  if (document.getElementById('renaiss-photo-id-btn')) return;
+
+  // Find a suitable place to inject (near the FMV badge)
+  const anchor = document.querySelector('div.bg-\\[\\#fdc600\\]\\/20, div.bg-yellow-400\\/20')?.parentElement;
+  if (!anchor) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'renaiss-photo-id-btn';
+  btn.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+    Identify from Photo
+  `;
+  btn.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    margin-left: 12px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  `;
+
+  btn.onmouseover = () => { btn.style.background = 'rgba(255, 255, 255, 0.1)'; btn.style.color = '#fff'; };
+  btn.onmouseout = () => { btn.style.background = 'rgba(255, 255, 255, 0.05)'; btn.style.color = '#94a3b8'; };
+
+  btn.onclick = async () => {
+    btn.innerHTML = 'Reading Label...';
+    btn.disabled = true;
+    try {
+      const result = await performOCRIdentification();
+      if (result) {
+        console.log("[PHOTO-ID] OCR Result:", result);
+        // Refresh metadata with new findings
+        const updatedMetadata = getCardMetadata();
+        // Since we can't easily "push" update to popup, we alert or rely on next popup open
+        btn.innerHTML = '✅ Identification Complete';
+        btn.style.borderColor = '#10b981';
+        btn.style.color = '#10b981';
+      } else {
+        btn.innerHTML = '❌ No slab detected';
+      }
+    } catch (err) {
+      console.error("[PHOTO-ID] Error:", err);
+      btn.innerHTML = '⚠️ OCR Failed';
+    }
+  };
+
+  anchor.appendChild(btn);
+}
+
+/**
+ * CORE: Performs OCR via Tesseract.js
+ */
+async function performOCRIdentification() {
+  // Find highest res image
+  const img = document.querySelector('img[class*="object-contain"]');
+  if (!img) return null;
+
+  try {
+    // Initialize Tesseract (it should be globally available from manifest)
+    // We use a worker for better performance
+    const worker = await Tesseract.createWorker('eng');
+    const { data: { text } } = await worker.recognize(img.src);
+    await worker.terminate();
+
+    console.log("[PHOTO-ID] Raw OCR Text:", text);
+
+    // Parse the text for key indicators
+    const findings = {
+      mcdonalds: text.match(/McDONALD/i),
+      masterball: text.match(/Master\s*Ball/i),
+      promo: text.match(/Promo/i),
+      serial: text.match(/\b(\d{7,10})\b/)
+    };
+
+    // If we found something relevant not in the original metadata, we can store it in sessionStorage
+    // or broadcast it. For now, we'll log it.
+    return text;
+  } catch (e) {
+    throw e;
+  }
 }
 
 function toggleSNKRDUNKModal() {

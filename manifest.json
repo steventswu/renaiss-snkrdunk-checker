@@ -27,6 +27,7 @@
         "*://*.renaiss.xyz/*"
       ],
       "js": [
+        "tesseract.min.js",
         "content.js"
       ]
     }
