@@ -3,15 +3,26 @@
   "name": "Renaiss Index Companion",
   "version": "2.1.0",
   "description": "View Renaiss Index pricing, market history, and grade data while browsing Renaiss OS.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://renaiss.xyz/*",
     "https://www.renaiss.xyz/*",
+    "https://*.public.blob.vercel-storage.com/*",
     "https://index.renaissos.com/*",
     "https://api.renaissos.com/*"
   ],
   "action": {
     "default_title": "Open Renaiss Index Companion",
     "default_popup": "popup.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://renaiss.xyz/card/*",
+        "https://www.renaiss.xyz/card/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }
