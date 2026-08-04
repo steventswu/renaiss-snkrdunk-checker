@@ -1,0 +1,9 @@
+# Local credentials and developer configuration. Never commit real values.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.secret
+secrets/

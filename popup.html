@@ -1,108 +1,99 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SNKRDUNK Price Checker</title>
-  <link rel="stylesheet" href="popup.css">
-</head>
-
-<body>
-  <div class="container">
-    <header>
-      <div class="header-top">
-        <h1>SNKRDUNK</h1>
-        <button id="closeModal" class="close-icon">&times;</button>
-      </div>
-      <div class="status-badge" id="cardName">Detecting card...</div>
-    </header>
-
-    <main>
-      <div class="price-grid">
-        <div class="price-card" id="psa10-card">
-          <div class="label">PSA 10</div>
-          <div class="price" id="psa10-price">--</div>
-          <div class="trend" id="psa10-status">Searching...</div>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Renaiss Index Companion</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">RENAISS OS</p>
+          <h1>Index Companion</h1>
         </div>
-        <div class="price-card full-width" id="avg-price-card">
-          <div class="label">30-Day Avg (PSA 10)</div>
-          <div class="market-stats-row">
-            <div class="stat-item highlight">
-              <span class="s-val" id="avg-val">--</span>
-            </div>
-            <div class="sub-stats">
-              <div class="stat-item">
-                <span class="s-label">High</span>
-                <span class="s-val" id="high-val">--</span>
-              </div>
-              <div class="stat-item">
-                <span class="s-label">Low</span>
-                <span class="s-val" id="low-val">--</span>
-              </div>
-            </div>
+        <a id="open-card" class="icon-link is-hidden" target="_blank" rel="noreferrer" aria-label="Open card on Renaiss Index">↗</a>
+      </header>
+
+      <section id="loading-state" class="state-card">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Loading Renaiss Index data…</p>
+      </section>
+
+      <section id="message-state" class="state-card is-hidden" aria-live="polite">
+        <p id="message-title" class="state-title"></p>
+        <p id="message-detail" class="muted"></p>
+      </section>
+
+      <section id="search-panel" class="is-hidden">
+        <form id="search-form" class="search-form">
+          <label for="search-input">Find a card</label>
+          <div class="search-row">
+            <input id="search-input" type="search" minlength="2" maxlength="80" placeholder="e.g. Monkey D. Luffy 014" autocomplete="off">
+            <button type="submit">Search</button>
           </div>
-          <div id="avg-price" style="display: none;">--</div>
-        </div>
-        <div class="price-card" id="psa10-pop-card">
-          <div class="label">PSA 10 POP</div>
-          <div class="price" id="psa10-pop">--</div>
-        </div>
-        <div class="price-card" id="total-pop-card">
-          <div class="label">TOTAL GRADED</div>
-          <div class="price" id="total-graded-pop">--</div>
-        </div>
-        <div class="price-card full-width" id="total-sold-card">
-          <div class="label">Units Sold (30D)</div>
-          <div class="price" id="total-units-sold">--</div>
-        </div>
-      </div>
+        </form>
+        <div id="search-results" class="search-results"></div>
+      </section>
 
-      <div class="pc-section" id="pc-section">
-        <div class="section-header">
-          <div class="label">PriceCharting Market Prices</div>
-          <div class="pc-status" id="pc-status">Searching...</div>
-        </div>
-        <div class="pc-price-grid">
-          <div class="pc-price-item">
-            <span class="pc-label">Ungraded</span>
-            <span class="pc-val" id="pc-ungraded">--</span>
-          </div>
-          <div class="pc-price-item">
-            <span class="pc-label">PSA 9</span>
-            <span class="pc-val" id="pc-psa9">--</span>
-          </div>
-          <div class="pc-price-item highlight">
-            <span class="pc-label">PSA 10</span>
-            <span class="pc-val" id="pc-psa10">--</span>
+      <section id="card-panel" class="is-hidden">
+        <div class="identity-row">
+          <img id="card-image" class="card-image is-hidden" alt="">
+          <div>
+            <h2 id="card-name"></h2>
+            <p id="card-meta" class="muted"></p>
           </div>
         </div>
-        <a id="pc-link" class="pc-link" href="#" target="_blank" style="display:none;">View on PriceCharting →</a>
-      </div>
 
-      <div class="advanced-market-card">
-        <div class="chart-container">
-          <div id="chart-area" class="chart-area"></div>
-          <div id="months-row" class="months-row"></div>
-        </div>
-      </div>
+        <section class="hero-price">
+          <p id="grade-label" class="eyebrow"></p>
+          <p id="fmv-price" class="price">—</p>
+          <p id="confidence" class="confidence">—</p>
+        </section>
 
-      <div class="history-section">
-        <div class="section-header">
-          <div class="label">Last 5 Trades</div>
-        </div>
-        <div id="trade-history-list" class="history-list">
-          <div class="history-item loading">Loading history...</div>
-        </div>
-      </div>
+        <section class="stat-grid" aria-label="Price changes">
+          <article><span>7D</span><strong id="delta-7">—</strong></article>
+          <article><span>30D</span><strong id="delta-30">—</strong></article>
+          <article><span>1Y</span><strong id="delta-365">—</strong></article>
+        </section>
 
+        <section class="panel">
+          <div class="section-heading"><h3>30-day FMV</h3><span id="chart-caption" class="muted"></span></div>
+          <div id="chart" class="chart" role="img" aria-label="30-day fair market value chart"></div>
+        </section>
+
+        <section class="stat-grid details-grid" aria-label="Market coverage">
+          <article><span>Sources</span><strong id="source-count">—</strong></article>
+          <article><span>Observations</span><strong id="observation-count">—</strong></article>
+          <article><span>Last observed</span><strong id="last-sale">—</strong></article>
+        </section>
+
+        <section id="other-grades-section" class="panel is-hidden">
+          <div class="section-heading"><h3>Other grades</h3></div>
+          <div id="other-grades" class="grade-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading"><h3>Recent market observations</h3><span id="trade-total" class="muted"></span></div>
+          <div id="trades" class="trade-list"></div>
+        </section>
+      </section>
+
+      <details class="settings">
+        <summary>API access</summary>
+        <p class="muted">Authentication is required. Credentials are kept only for the current browser session and are never saved in the extension files.</p>
+        <label for="api-key">API key</label>
+        <input id="api-key" type="password" autocomplete="off" placeholder="rk_…">
+        <label for="api-secret">API secret</label>
+        <input id="api-secret" type="password" autocomplete="off" placeholder="rsk_…">
+        <div class="settings-actions">
+          <button id="save-settings" type="button">Save</button>
+          <button id="clear-settings" class="secondary" type="button">Clear</button>
+        </div>
+        <p id="rate-limit" class="muted" aria-live="polite"></p>
+      </details>
     </main>
-
-    <footer>
-      <button id="viewOnSnkrdunk" class="primary-btn">View on SNKRDUNK</button>
-    </footer>
-  </div>
-  <script src="popup.js"></script>
-</body>
-
+    <script src="popup.js"></script>
+  </body>
 </html>
