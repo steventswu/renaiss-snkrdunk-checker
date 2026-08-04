@@ -14,7 +14,7 @@ async function init() {
   if (cardPath) {
     await loadCard(cardPath);
   } else {
-    showSearch('Open a card page on index.renaissos.com or search the Index.');
+    showSearch('Open a Renaiss card page or search the Index.');
   }
 }
 
@@ -32,18 +32,25 @@ async function getActiveCardPath() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.url) return null;
   const url = new URL(tab.url);
+  if (url.hostname === 'renaiss.xyz' || url.hostname === 'www.renaiss.xyz') {
+    const legacyMatch = url.pathname.match(/^\/card\/([^/]+)\/?$/);
+    return legacyMatch ? `/cards/by-renaiss-id/${encodeURIComponent(legacyMatch[1])}` : null;
+  }
   if (url.hostname !== 'index.renaissos.com') return null;
-  const match = url.pathname.match(/^\/card\/([^/]+)\/([^/]+)\/([^/]+)\/?$/);
-  return match ? `/cards/${match[1]}/${match[2]}/${match[3]}` : null;
+  const indexMatch = url.pathname.match(/^\/card\/([^/]+)\/([^/]+)\/([^/]+)\/?$/);
+  return indexMatch ? `/cards/${indexMatch[1]}/${indexMatch[2]}/${indexMatch[3]}` : null;
 }
 
 async function loadCard(cardPath) {
   setLoading(true);
   try {
-    const [card, fmv, trades] = await Promise.all([
-      apiRequest(cardPath),
-      apiRequest(`${cardPath}/fmv-series`),
-      apiRequest(`${cardPath}/trades`)
+    // The legacy Renaiss page exposes an upstream item id. Resolve it first;
+    // FMV/trades are keyed by the API catalog UUID returned in card.id.
+    const card = await apiRequest(cardPath);
+    const cardId = encodeURIComponent(card.id);
+    const [fmv, trades] = await Promise.all([
+      apiRequest(`/cards/by-id/${cardId}/fmv-series`),
+      apiRequest(`/cards/by-id/${cardId}/trades`)
     ]);
     state.card = card;
     renderCard(card, fmv, trades);
