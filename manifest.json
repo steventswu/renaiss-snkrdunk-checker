@@ -1,47 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "SNKRDUNK Price Checker",
-  "version": "1.0",
-  "description": "Check SNKRDUNK prices while browsing Renaiss.xyz",
-  "permissions": [
-    "storage",
-    "activeTab",
-    "scripting"
-  ],
+  "name": "Renaiss Index Companion",
+  "version": "2.0.0",
+  "description": "View Renaiss Index pricing, market history, and grade data while browsing Renaiss OS.",
+  "permissions": ["storage", "activeTab"],
   "host_permissions": [
-    "*://*.renaiss.xyz/*",
-    "*://*.snkrdunk.com/*",
-    "*://*.gemrate.com/*",
-    "*://*.pricecharting.com/*",
-    "*://open.er-api.com/*",
-    "*://*.psacard.com/*",
-    "https://r.jina.ai/*"
+    "https://index.renaissos.com/*",
+    "https://api.renaissos.com/*"
   ],
-  "action": {},
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "*://*.renaiss.xyz/*"
-      ],
-      "js": [
-        "tesseract.min.js",
-        "content.js"
-      ]
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "popup.html",
-        "popup.js",
-        "popup.css"
-      ],
-      "matches": [
-        "*://*.renaiss.xyz/*"
-      ]
-    }
-  ]
+  "action": {
+    "default_title": "Open Renaiss Index Companion",
+    "default_popup": "popup.html"
+  }
 }
