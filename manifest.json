@@ -1,10 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Renaiss Index Companion",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "View Renaiss Index pricing, market history, and grade data while browsing Renaiss OS.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
+    "https://renaiss.xyz/*",
+    "https://www.renaiss.xyz/*",
     "https://index.renaissos.com/*",
     "https://api.renaissos.com/*"
   ],
