@@ -10,9 +10,9 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   bindEvents();
   await loadCredentials();
-  const cardPath = await getActiveCardPath();
-  if (cardPath) {
-    await loadCard(cardPath);
+  const cardContext = await getActiveCardContext();
+  if (cardContext) {
+    await loadCard(cardContext);
   } else {
     showSearch('Open a Renaiss card page or search the Index.');
   }
@@ -28,25 +28,37 @@ function bindEvents() {
   $('clear-settings').addEventListener('click', clearCredentials);
 }
 
-async function getActiveCardPath() {
+async function getActiveCardContext() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.url) return null;
   const url = new URL(tab.url);
   if (url.hostname === 'renaiss.xyz' || url.hostname === 'www.renaiss.xyz') {
     const legacyMatch = url.pathname.match(/^\/card\/([^/]+)\/?$/);
-    return legacyMatch ? `/cards/by-renaiss-id/${encodeURIComponent(legacyMatch[1])}` : null;
+    return legacyMatch ? {
+      apiPath: `/cards/by-renaiss-id/${encodeURIComponent(legacyMatch[1])}`,
+      tabId: tab.id,
+      legacyItemId: legacyMatch[1]
+    } : null;
   }
   if (url.hostname !== 'index.renaissos.com') return null;
   const indexMatch = url.pathname.match(/^\/card\/([^/]+)\/([^/]+)\/([^/]+)\/?$/);
-  return indexMatch ? `/cards/${indexMatch[1]}/${indexMatch[2]}/${indexMatch[3]}` : null;
+  return indexMatch ? { apiPath: `/cards/${indexMatch[1]}/${indexMatch[2]}/${indexMatch[3]}` } : null;
 }
 
-async function loadCard(cardPath) {
+async function loadCard(cardContext) {
   setLoading(true);
   try {
-    // The legacy Renaiss page exposes an upstream item id. Resolve it first;
+    let card;
+    try {
+      // Index URLs resolve directly. Legacy Renaiss IDs may not exist in the
+      // Index catalog, so those fall through to photo identification below.
+      card = await apiRequest(cardContext.apiPath);
+    } catch (error) {
+      if (!cardContext.legacyItemId || error.status !== 404) throw error;
+      card = await identifyLegacyCard(cardContext.tabId);
+    }
+
     // FMV/trades are keyed by the API catalog UUID returned in card.id.
-    const card = await apiRequest(cardPath);
     const cardId = encodeURIComponent(card.id);
     const [fmv, trades] = await Promise.all([
       apiRequest(`/cards/by-id/${cardId}/fmv-series`),
@@ -75,7 +87,7 @@ async function searchCards(query) {
       button.className = 'search-result';
       button.type = 'button';
       button.innerHTML = `${escapeHtml(card.name)}<span>${escapeHtml([card.setName, card.cardNumber, card.gradeLabel].filter(Boolean).join(' · '))}</span>`;
-      button.addEventListener('click', () => loadCard(card.href.replace(/^\/card/, '/cards')));
+      button.addEventListener('click', () => loadCard({ apiPath: card.href.replace(/^\/card/, '/cards') }));
       $('search-results').append(button);
     });
   } catch (error) {
@@ -85,7 +97,54 @@ async function searchCards(query) {
   }
 }
 
-async function apiRequest(path) {
+async function identifyLegacyCard(tabId) {
+  let metadata;
+  try {
+    metadata = await chrome.tabs.sendMessage(tabId, { action: 'getCardMetadata' });
+  } catch (error) {
+    // The user may have opened the page before loading/reloading the unpacked
+    // extension. Inject the read-only bridge once instead of requiring a page reload.
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      metadata = await chrome.tabs.sendMessage(tabId, { action: 'getCardMetadata' });
+    } catch (injectionError) {
+      throw new Error('Reload the Renaiss card page so the companion can read its card image.');
+    }
+  }
+  if (!metadata?.imageUrl) {
+    if (!metadata?.serial) throw new Error('No card image or certification number was found on this Renaiss page.');
+  }
+
+  // Prefer the slab cert when the legacy page exposes one: this preserves the
+  // exact grading company and grade instead of falling back to a representative
+  // grade for the visually matched card.
+  if (metadata.serial) {
+    try {
+      const graded = await apiRequest(`/graded/${encodeURIComponent(metadata.serial)}`);
+      if (graded.found && graded.card?.href) {
+        return apiRequest(graded.card.href.replace(/^\/card/, '/cards'));
+      }
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
+  }
+  if (!metadata.imageUrl) {
+    throw new Error('No card image was found on this Renaiss page.');
+  }
+
+  const imageResponse = await fetch(metadata.imageUrl);
+  if (!imageResponse.ok) throw new Error('The card image could not be read for identification.');
+  const imageBlob = await imageResponse.blob();
+  const form = new FormData();
+  form.append('file', imageBlob, 'renaiss-card.jpg');
+  const match = await apiRequest('/search/by-image?limit=5', { method: 'POST', body: form });
+  if (!match.ids?.length || match.confidence === 'low' || match.confidence === 'none') {
+    throw new Error('The card image match was uncertain. Try a clearer card image.');
+  }
+  return apiRequest(`/cards/by-id/${encodeURIComponent(match.ids[0])}`);
+}
+
+async function apiRequest(path, options = {}) {
   const credentials = await chrome.storage.session.get(CREDENTIAL_KEYS);
   if (!credentials.renaissApiKey || !credentials.renaissApiSecret) {
     throw new Error('Enter both Renaiss API credentials in API access before loading Index data.');
@@ -93,12 +152,14 @@ async function apiRequest(path) {
   const headers = { Accept: 'application/json' };
   headers['X-Api-Key'] = credentials.renaissApiKey;
   headers['X-Api-Secret'] = credentials.renaissApiSecret;
-  const response = await fetch(`${API_BASE}${path}`, { headers });
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
   updateRateLimit(response.headers);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 429) throw new Error('API rate limit reached. Add your Renaiss API credentials below and try again.');
-    throw new Error(body.error || body.message || `Renaiss API request failed (${response.status}).`);
+    const error = new Error(body.error || body.message || `Renaiss API request failed (${response.status}).`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
