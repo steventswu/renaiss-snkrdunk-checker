@@ -10,11 +10,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 let lastFocusedElement = null;
+let lastCardUrl = location.href;
+let cardChangeTimer = null;
 
 function toggleModal() {
   const existing = document.getElementById('renaiss-index-companion-modal');
   if (existing) {
-    closeModal();
+    if (existing.dataset.open === 'true') {
+      closeModal();
+    } else {
+      lastFocusedElement = document.activeElement;
+      openModal(existing);
+    }
     return;
   }
 
@@ -24,6 +31,7 @@ function toggleModal() {
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
   overlay.setAttribute('aria-label', 'Renaiss Index card data');
+  overlay.dataset.open = 'true';
   overlay.style.cssText = [
     'position:fixed', 'inset:0', 'z-index:2147483647',
     'display:grid', 'place-items:center', 'padding:24px',
@@ -36,7 +44,7 @@ function toggleModal() {
   frame.src = chrome.runtime.getURL('popup.html');
   frame.title = 'Renaiss Index Companion';
   frame.style.cssText = [
-    'width:min(540px, 100%)', 'height:min(780px, calc(100vh - 48px))',
+    'width:min(1080px, 100%)', 'height:min(900px, calc(100vh - 36px))',
     'border:1px solid rgba(148, 163, 184, .28)', 'border-radius:20px',
     'box-shadow:0 32px 80px rgba(0, 0, 0, .55)', 'background:#09101d',
     'animation:renaissModalIn .22s cubic-bezier(.16, 1, .3, 1)'
@@ -51,11 +59,23 @@ function toggleModal() {
   installModalStyles();
 }
 
+function openModal(overlay) {
+  overlay.style.display = 'grid';
+  overlay.dataset.open = 'true';
+  overlay.removeAttribute('aria-hidden');
+  document.addEventListener('keydown', onModalKeydown);
+  const frame = document.getElementById('renaiss-index-companion-frame');
+  frame?.focus();
+  frame?.contentWindow?.postMessage({ source: 'renaiss-index-companion', action: 'refresh-active-card' }, '*');
+}
+
 function closeModal() {
   const overlay = document.getElementById('renaiss-index-companion-modal');
   if (!overlay) return;
   document.removeEventListener('keydown', onModalKeydown);
-  overlay.remove();
+  overlay.style.display = 'none';
+  overlay.dataset.open = 'false';
+  overlay.setAttribute('aria-hidden', 'true');
   lastFocusedElement?.focus?.();
 }
 
@@ -76,6 +96,28 @@ window.addEventListener('message', (event) => {
   if (event.source !== frame?.contentWindow) return;
   if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'close-modal') closeModal();
 });
+
+function notifyCardChange() {
+  if (location.href === lastCardUrl) return;
+  lastCardUrl = location.href;
+  clearTimeout(cardChangeTimer);
+  cardChangeTimer = setTimeout(() => {
+    document.getElementById('renaiss-index-companion-frame')?.contentWindow?.postMessage({
+      source: 'renaiss-index-companion',
+      action: 'refresh-active-card'
+    }, '*');
+  }, 250);
+}
+
+for (const method of ['pushState', 'replaceState']) {
+  const original = history[method];
+  history[method] = function (...args) {
+    const result = original.apply(this, args);
+    notifyCardChange();
+    return result;
+  };
+}
+window.addEventListener('popstate', notifyCardChange);
 
 function getCardMetadata() {
   const title = document.querySelector('h1')?.textContent?.trim() || document.title;

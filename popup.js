@@ -4,12 +4,21 @@ const CREDENTIAL_KEYS = ['renaissApiKey', 'renaissApiSecret'];
 
 const $ = (id) => document.getElementById(id);
 const state = { card: null, rateLimit: null };
+let cardLoadSequence = 0;
 
 document.addEventListener('DOMContentLoaded', init);
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent) return;
+  if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'refresh-active-card') {
+    refreshActiveCard();
+  }
+});
 
 async function init() {
   bindEvents();
   await loadCredentials();
+  loadIndexComparison();
   const cardContext = await getActiveCardContext();
   if (cardContext) {
     await loadCard(cardContext);
@@ -17,6 +26,90 @@ async function init() {
     setLoading(false);
     showSearch('Open a Renaiss card page or search the Index.');
   }
+}
+
+async function loadIndexComparison() {
+  const credentials = await chrome.storage.session.get(CREDENTIAL_KEYS);
+  if (!credentials.renaissApiKey || !credentials.renaissApiSecret) return;
+  setIndexStatus('one-piece', 'Loading…');
+  setIndexStatus('pokemon', 'Loading…');
+  try {
+    const [onePiece, onePieceSeries, pokemon, pokemonSeries] = await Promise.all([
+      apiRequest('/indices/one-piece'),
+      apiRequest('/indices/one-piece/series?window=365'),
+      apiRequest('/indices/pokemon'),
+      apiRequest('/indices/pokemon/series?window=365')
+    ]);
+    renderIndex('one-piece', onePiece, onePieceSeries);
+    renderIndex('pokemon', pokemon, pokemonSeries);
+  } catch (error) {
+    setIndexStatus('one-piece', 'Unavailable');
+    setIndexStatus('pokemon', 'Unavailable');
+  }
+}
+
+function renderIndex(game, detail, series) {
+  const prefix = game;
+  $(`${prefix}-index-value`).textContent = formatIndexValue(detail.value);
+  const delta = detail.deltas?.d365;
+  const deltaEl = $(`${prefix}-index-change`);
+  deltaEl.classList.remove('positive', 'negative');
+  deltaEl.textContent = typeof delta === 'number' ? `${delta > 0 ? '+' : ''}${delta.toFixed(1)}% · 1 year` : '1-year change unavailable';
+  if (typeof delta === 'number') deltaEl.classList.add(delta >= 0 ? 'positive' : 'negative');
+  setIndexStatus(prefix, `${formatNumber(detail.constituentCount)} cards`);
+  renderInteractiveIndexChart(prefix, series.points || []);
+}
+
+function setIndexStatus(game, message) {
+  $(`${game}-index-status`).textContent = message;
+}
+
+function renderInteractiveIndexChart(game, points) {
+  const chart = $(`${game}-index-chart`);
+  const tooltip = $(`${game}-index-tooltip`);
+  const valid = points.filter((point) => Number.isFinite(point.value) && point.t);
+  if (valid.length < 2) {
+    chart.innerHTML = '<div class="chart-empty">No index history available.</div>';
+    return;
+  }
+  const values = valid.map((point) => point.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const width = 480;
+  const height = 150;
+  const color = game === 'one-piece' ? '#72d6bb' : '#ffcb5c';
+  const coordinates = valid.map((point, index) => ({
+    x: (index / (valid.length - 1)) * width,
+    y: height - ((point.value - min) / range) * height,
+    point
+  }));
+  const path = coordinates.map(({ x, y }, index) => `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const area = `${path} L${width},${height} L0,${height} Z`;
+  chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="${game}-fill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="${color}" stop-opacity=".3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#${game}-fill)"/><path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" vector-effect="non-scaling-stroke"/><line id="${game}-hover-line" class="index-hover-line is-hidden" y1="0" y2="${height}"/><circle id="${game}-hover-dot" class="index-hover-dot is-hidden" r="4"/></svg>`;
+  const line = $(`${game}-hover-line`);
+  const dot = $(`${game}-hover-dot`);
+  chart.onmousemove = (event) => {
+    const rect = chart.getBoundingClientRect();
+    const position = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const index = Math.round((position / rect.width) * (coordinates.length - 1));
+    const selected = coordinates[index];
+    line.setAttribute('x1', selected.x);
+    line.setAttribute('x2', selected.x);
+    line.classList.remove('is-hidden');
+    dot.setAttribute('cx', selected.x);
+    dot.setAttribute('cy', selected.y);
+    dot.setAttribute('fill', color);
+    dot.classList.remove('is-hidden');
+    tooltip.textContent = `${formatIndexDate(selected.point.t)} · ${formatIndexValue(selected.point.value)}`;
+    tooltip.style.left = `${Math.max(8, Math.min(rect.width - 138, position - 62))}px`;
+    tooltip.classList.remove('is-hidden');
+  };
+  chart.onmouseleave = () => {
+    line.classList.add('is-hidden');
+    dot.classList.add('is-hidden');
+    tooltip.classList.add('is-hidden');
+  };
 }
 
 function bindEvents() {
@@ -50,13 +143,14 @@ async function getActiveCardContext() {
 }
 
 async function loadCard(cardContext) {
+  const loadSequence = ++cardLoadSequence;
   setLoading(true);
   try {
     let card;
     try {
       // Index URLs resolve directly. Legacy Renaiss IDs may not exist in the
       // Index catalog, so those fall through to photo identification below.
-      card = await apiRequest(cardContext.apiPath);
+      card = await apiRequest(cardContext.apiPath, { cache: 'no-store' });
     } catch (error) {
       if (!cardContext.legacyItemId || error.status !== 404) throw error;
       card = await identifyLegacyCard(cardContext.tabId);
@@ -65,15 +159,28 @@ async function loadCard(cardContext) {
     // FMV/trades are keyed by the API catalog UUID returned in card.id.
     const cardId = encodeURIComponent(card.id);
     const [fmv, trades] = await Promise.all([
-      apiRequest(`/cards/by-id/${cardId}/fmv-series`),
-      apiRequest(`/cards/by-id/${cardId}/trades`)
+      apiRequest(`/cards/by-id/${cardId}/fmv-series`, { cache: 'no-store' }),
+      apiRequest(`/cards/by-id/${cardId}/trades`, { cache: 'no-store' })
     ]);
+    if (loadSequence !== cardLoadSequence) return;
     state.card = card;
     renderCard(card, fmv, trades);
   } catch (error) {
+    if (loadSequence !== cardLoadSequence) return;
     showSearch(error.message || 'Renaiss Index data could not be loaded.');
   } finally {
+    if (loadSequence === cardLoadSequence) setLoading(false);
+  }
+}
+
+async function refreshActiveCard() {
+  const cardContext = await getActiveCardContext();
+  if (cardContext) {
+    await loadCard(cardContext);
+  } else {
+    cardLoadSequence += 1;
     setLoading(false);
+    showSearch('Open a Renaiss card page or search the Index.');
   }
 }
 
@@ -315,6 +422,15 @@ function formatUsd(cents) {
 
 function formatNumber(value) {
   return Number.isFinite(value) ? new Intl.NumberFormat('en-US').format(value) : '—';
+}
+
+function formatIndexValue(value) {
+  return Number.isFinite(value) ? new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value) : '—';
+}
+
+function formatIndexDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unknown date' : new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
 function formatDate(value) {
