@@ -1,7 +1,7 @@
 {
   "name": "renaiss-index-companion",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.4.1",
   "scripts": {
     "build": "esbuild src/popup.jsx --bundle --format=iife --target=chrome109 --outfile=popup.bundle.js",
     "check": "node --check content.js && node --check background.js && node --check page-bridge.js && node --check modal-launcher.js && node --check popup.bundle.js"
