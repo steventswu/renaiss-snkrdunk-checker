@@ -15,6 +15,14 @@ window.addEventListener('message', (event) => {
   }
 });
 
+// This remains active while the modal is hidden, so a Renaiss SPA navigation
+// is detected even when the page's history hooks run in its own JS world.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (!changeInfo.url) return;
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (activeTab?.id === tabId) refreshActiveCard();
+});
+
 async function init() {
   bindEvents();
   await loadCredentials();

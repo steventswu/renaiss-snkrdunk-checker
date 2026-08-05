@@ -12,6 +12,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 let lastFocusedElement = null;
 let lastCardUrl = location.href;
 let cardChangeTimer = null;
+let cardUrlWatcher = null;
 
 function toggleModal() {
   const existing = document.getElementById('renaiss-index-companion-modal');
@@ -51,6 +52,7 @@ function toggleModal() {
   ].join(';');
   overlay.append(frame);
   document.body.append(overlay);
+  startCardUrlWatcher();
 
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) closeModal();
@@ -118,6 +120,14 @@ for (const method of ['pushState', 'replaceState']) {
   };
 }
 window.addEventListener('popstate', notifyCardChange);
+
+// Renaiss uses client-side navigation. Page scripts do not reliably trigger
+// history hooks installed by an extension content script, so also observe the
+// address directly while the companion is present.
+function startCardUrlWatcher() {
+  if (cardUrlWatcher) return;
+  cardUrlWatcher = window.setInterval(notifyCardChange, 400);
+}
 
 function getCardMetadata() {
   const title = document.querySelector('h1')?.textContent?.trim() || document.title;
