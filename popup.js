@@ -14,6 +14,7 @@ async function init() {
   if (cardContext) {
     await loadCard(cardContext);
   } else {
+    setLoading(false);
     showSearch('Open a Renaiss card page or search the Index.');
   }
 }
