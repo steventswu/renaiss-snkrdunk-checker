@@ -1,7 +1,9 @@
-const CARD_PAGE_PATTERN = /^https:\/\/(?:www\.)?renaiss\.xyz\/card\/|^https:\/\/index\.renaissos\.com\/card\//;
+const WEB_PAGE_PATTERN = /^https?:\/\//;
 
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id || !CARD_PAGE_PATTERN.test(tab.url || '')) return;
+  // `activeTab` grants temporary access after this user gesture. Card pages
+  // load their data automatically; every other web page opens search mode.
+  if (!tab.id || !WEB_PAGE_PATTERN.test(tab.url || '')) return;
   try {
     await chrome.tabs.sendMessage(tab.id, { action: 'toggleModal' });
   } catch (error) {
