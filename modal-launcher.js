@@ -5,21 +5,33 @@
   const host = globalThis.__renaissIndexModalHost || (globalThis.__renaissIndexModalHost = {});
 
   const getMetadata = () => {
+    const renaissItemId = location.pathname.match(/^\/card\/([^/]+)\/?$/)?.[1] || '';
+    const tokenLink = Array.from(document.querySelectorAll('a[href*="/nft/"]')).find((link) => {
+      try {
+        return new URL(link.href).pathname.split('/').pop() === renaissItemId;
+      } catch (error) {
+        return false;
+      }
+    });
+    const renderedItemId = tokenLink ? new URL(tokenLink.href).pathname.split('/').pop() : '';
+    const ready = !renaissItemId || renderedItemId === renaissItemId;
     const details = {};
-    document.querySelectorAll('div.grid.grid-cols-\\[auto_1fr\\].gap-x-3.gap-y-1').forEach((grid) => {
+    if (ready) document.querySelectorAll('div.grid.grid-cols-\\[auto_1fr\\].gap-x-3.gap-y-1').forEach((grid) => {
       const children = Array.from(grid.children);
       for (let index = 0; index + 1 < children.length; index += 2) {
         const label = children[index].textContent.trim().toLowerCase();
         if (label) details[label] = children[index + 1].textContent.trim();
       }
     });
-    const image = Array.from(document.images).find((candidate) => {
+    const image = ready && Array.from(document.querySelector('main')?.images || []).find((candidate) => {
       const source = candidate.currentSrc || candidate.src || '';
-      return source.includes('graded-cards-renders') || /card|slab/i.test(candidate.alt || '');
+      return candidate.getClientRects().length > 0 && (source.includes('graded-cards-renders') || /card|slab/i.test(candidate.alt || ''));
     });
     return {
+      ready,
       title: document.querySelector('h1')?.textContent?.trim() || document.title,
-      renaissItemId: location.pathname.match(/^\/card\/([^/]+)\/?$/)?.[1] || '',
+      renaissItemId,
+      renderedItemId,
       imageUrl: image?.currentSrc || image?.src || '',
       serial: details.serial || '',
       grader: details.grader || '',
@@ -30,27 +42,39 @@
     };
   };
 
+  const waitForCurrentMetadata = async () => {
+    const deadline = Date.now() + 10000;
+    let metadata = getMetadata();
+    while (!metadata.ready && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      metadata = getMetadata();
+    }
+    return { ...metadata, timedOut: !metadata.ready };
+  };
+
   const close = () => {
     const overlay = document.getElementById('renaiss-index-companion-modal');
     overlay?.remove();
   };
 
-  if (!host.installed) {
-    host.installed = true;
-    window.addEventListener('message', (event) => {
-      const frame = document.getElementById('renaiss-index-companion-frame');
-      if (event.source !== frame?.contentWindow || event.data?.source !== 'renaiss-index-companion') return;
-      if (event.data.action === 'close-modal') close();
-      if (event.data.action === 'get-active-card-context') {
-        frame.contentWindow.postMessage({
-          source: 'renaiss-index-companion',
-          action: 'active-card-context',
-          cardUrl: location.href,
-          metadata: getMetadata()
-        }, '*');
-      }
-    });
-  }
+  if (host.messageListener) window.removeEventListener('message', host.messageListener);
+  host.messageListener = async (event) => {
+    const frame = document.getElementById('renaiss-index-companion-frame');
+    if (event.source !== frame?.contentWindow || event.data?.source !== 'renaiss-index-companion') return;
+    if (event.data.action === 'close-modal') close();
+    if (event.data.action === 'get-active-card-context') {
+      const metadata = await waitForCurrentMetadata();
+      const currentFrame = document.getElementById('renaiss-index-companion-frame');
+      if (currentFrame !== frame) return;
+      frame.contentWindow.postMessage({
+        source: 'renaiss-index-companion',
+        action: 'active-card-context',
+        cardUrl: location.href,
+        metadata
+      }, '*');
+    }
+  };
+  window.addEventListener('message', host.messageListener);
 
   // Replacing instead of hiding is intentional: every open receives a new
   // React tree, a new card request, and the current SPA URL.

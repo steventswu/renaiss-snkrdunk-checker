@@ -47,8 +47,10 @@ async function request(path, credentials, onRateLimit, options = {}) {
   return response.json();
 }
 
-async function identifyLegacyCard(context, credentials, onRateLimit, signal) {
-  const metadata = await chrome.tabs.sendMessage(context.tabId, { action: 'getCardMetadata' });
+async function identifyLegacyCard(context, credentials, onRateLimit, signal, currentMetadata) {
+  const metadata = currentMetadata?.ready
+    ? currentMetadata
+    : await chrome.tabs.sendMessage(context.tabId, { action: 'getCardMetadata' });
   if (metadata?.serial) {
     try {
       const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, credentials, onRateLimit, { signal });
@@ -68,21 +70,11 @@ async function identifyLegacyCard(context, credentials, onRateLimit, signal) {
 }
 
 async function resolveCard(context, metadata, credentials, onRateLimit, signal) {
-  // The current page's certification number identifies the exact slab even
-  // when Renaiss navigates client-side and its route state is still settling.
-  if (metadata?.serial) {
-    try {
-      const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, credentials, onRateLimit, { signal });
-      if (graded.found && graded.card?.href) return request(graded.card.href.replace(/^\/card/, '/cards'), credentials, onRateLimit, { signal });
-    } catch (error) {
-      if (error.status !== 404) throw error;
-    }
-  }
   try {
     return await request(context.apiPath, credentials, onRateLimit, { signal });
   } catch (error) {
     if (!context.legacyItemId || error.status !== 404) throw error;
-    return identifyLegacyCard(context, credentials, onRateLimit, signal);
+    return identifyLegacyCard(context, credentials, onRateLimit, signal, metadata);
   }
 }
 
@@ -155,6 +147,14 @@ function App() {
       }
       if (!credentials.renaissApiKey || !credentials.renaissApiSecret) {
         if (version === requestVersion.current) setCardState({ status: 'empty', card: null, fmv: null, trades: null, error: 'Enter both Renaiss API credentials in API access below.' });
+        return;
+      }
+      if (context.legacyItemId && cardTarget.metadata?.timedOut) {
+        if (version === requestVersion.current) setCardState({ status: 'error', card: null, fmv: null, trades: null, error: 'Renaiss did not finish rendering this card. Close the modal and try again.' });
+        return;
+      }
+      if (context.legacyItemId && cardTarget.metadata?.ready !== true) {
+        if (version === requestVersion.current) setCardState({ status: 'loading', card: null, fmv: null, trades: null, error: '' });
         return;
       }
       setCardState({ status: 'loading', card: null, fmv: null, trades: null, error: '' });
