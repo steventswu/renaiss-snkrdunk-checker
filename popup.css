@@ -63,6 +63,8 @@ button.secondary { color: var(--text); background: transparent; border: 1px soli
 .search-result:hover { border-color: var(--accent); }
 .search-result span { display: block; color: var(--muted); font-size: 11px; font-weight: 500; margin-top: 2px; }
 .identity-row { gap: 13px; margin-bottom: 14px; }
+.page-card-context { margin: -5px 2px 12px; color: var(--muted); font-size: 10px; }
+.page-card-context strong { color: var(--accent); }
 .card-image { width: 58px; height: 78px; flex: 0 0 auto; object-fit: cover; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-soft); }
 .hero-price { padding: 18px; background: linear-gradient(135deg, #153f46, var(--panel)); margin-bottom: 10px; }
 .price { margin: 2px 0; font-size: 37px; font-weight: 800; letter-spacing: -.04em; }

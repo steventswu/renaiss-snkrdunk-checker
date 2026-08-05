@@ -23645,6 +23645,22 @@
     if (!match.ids?.length || match.confidence === "low" || match.confidence === "none") throw new Error("The card image match was uncertain. Try a clearer card image.");
     return request(`/cards/by-id/${encodeURIComponent(match.ids[0])}`, credentials, onRateLimit, { signal });
   }
+  async function resolveCard(context, metadata, credentials, onRateLimit, signal) {
+    if (metadata?.serial) {
+      try {
+        const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, credentials, onRateLimit, { signal });
+        if (graded.found && graded.card?.href) return request(graded.card.href.replace(/^\/card/, "/cards"), credentials, onRateLimit, { signal });
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
+    try {
+      return await request(context.apiPath, credentials, onRateLimit, { signal });
+    } catch (error) {
+      if (!context.legacyItemId || error.status !== 404) throw error;
+      return identifyLegacyCard(context, credentials, onRateLimit, signal);
+    }
+  }
   function App() {
     const initialCardUrl = new URLSearchParams(window.location.search).get("cardUrl");
     const [credentials, setCredentials] = (0, import_react.useState)(null);
@@ -23661,13 +23677,17 @@
     }, []);
     (0, import_react.useEffect)(() => {
       const receiveUrl = (event) => {
-        if (event.source !== window.parent || event.data?.source !== "renaiss-index-companion" || event.data?.action !== "refresh-active-card") return;
-        setCardTarget((current) => ({ url: event.data.cardUrl || current.url, revision: current.revision + 1 }));
+        if (event.source !== window.parent || event.data?.source !== "renaiss-index-companion") return;
+        if (event.data.action === "active-card-context") {
+          setCardTarget((current) => ({ url: event.data.cardUrl || current.url, metadata: event.data.metadata || null, revision: current.revision + 1 }));
+        } else if (event.data.action === "refresh-active-card") {
+          window.parent.postMessage({ source: "renaiss-index-companion", action: "get-active-card-context" }, "*");
+        }
       };
       const receiveTabUrl = async (tabId, changeInfo) => {
         if (!changeInfo.url) return;
         const tab = await activeTab();
-        if (tab?.id === tabId) setCardTarget((current) => ({ url: changeInfo.url, revision: current.revision + 1 }));
+        if (tab?.id === tabId) setCardTarget((current) => ({ url: changeInfo.url, metadata: null, revision: current.revision + 1 }));
       };
       window.addEventListener("message", receiveUrl);
       chrome.tabs.onUpdated.addListener(receiveTabUrl);
@@ -23677,7 +23697,7 @@
       };
     }, []);
     (0, import_react.useEffect)(() => {
-      window.parent.postMessage({ source: "renaiss-index-companion", action: "get-active-card-url" }, "*");
+      window.parent.postMessage({ source: "renaiss-index-companion", action: "get-active-card-context" }, "*");
     }, []);
     (0, import_react.useEffect)(() => {
       if (!credentials?.renaissApiKey || !credentials?.renaissApiSecret) return;
@@ -23711,13 +23731,7 @@
         }
         setCardState({ status: "loading", card: null, fmv: null, trades: null, error: "" });
         try {
-          let card;
-          try {
-            card = await request(context.apiPath, credentials, setRateLimit, { signal: controller.signal });
-          } catch (error) {
-            if (!context.legacyItemId || error.status !== 404) throw error;
-            card = await identifyLegacyCard(context, credentials, setRateLimit, controller.signal);
-          }
+          const card = await resolveCard(context, cardTarget.metadata, credentials, setRateLimit, controller.signal);
           const [fmv, trades] = await Promise.all([
             request(`/cards/by-id/${encodeURIComponent(card.id)}/fmv-series`, credentials, setRateLimit, { signal: controller.signal }),
             request(`/cards/by-id/${encodeURIComponent(card.id)}/trades`, credentials, setRateLimit, { signal: controller.signal })
@@ -23730,7 +23744,7 @@
       load();
       return () => controller.abort();
     }, [cardTarget, credentials]);
-    return /* @__PURE__ */ import_react.default.createElement("main", { className: "app-shell" }, /* @__PURE__ */ import_react.default.createElement(Header, { card: cardState.card }), /* @__PURE__ */ import_react.default.createElement(IndexComparison, { indices }), cardState.status === "loading" && /* @__PURE__ */ import_react.default.createElement(Loading, null), cardState.status === "ready" && /* @__PURE__ */ import_react.default.createElement(CardDetails, { card: cardState.card, fmv: cardState.fmv, trades: cardState.trades }), (cardState.status === "empty" || cardState.status === "error") && /* @__PURE__ */ import_react.default.createElement(SearchPanel, { credentials, onRateLimit: setRateLimit, onCardUrl: (url) => setCardTarget((current) => ({ url, revision: current.revision + 1 })), message: cardState.error }), /* @__PURE__ */ import_react.default.createElement(ApiSettings, { credentials, setCredentials, rateLimit, setRateLimit }));
+    return /* @__PURE__ */ import_react.default.createElement("main", { className: "app-shell" }, /* @__PURE__ */ import_react.default.createElement(Header, { card: cardState.card }), /* @__PURE__ */ import_react.default.createElement(IndexComparison, { indices }), cardState.status === "loading" && /* @__PURE__ */ import_react.default.createElement(Loading, null), cardState.status === "ready" && /* @__PURE__ */ import_react.default.createElement(CardDetails, { card: cardState.card, fmv: cardState.fmv, trades: cardState.trades, pageMetadata: cardTarget.metadata }), (cardState.status === "empty" || cardState.status === "error") && /* @__PURE__ */ import_react.default.createElement(SearchPanel, { credentials, onRateLimit: setRateLimit, onCardUrl: (url) => setCardTarget((current) => ({ url, metadata: null, revision: current.revision + 1 })), message: cardState.error }), /* @__PURE__ */ import_react.default.createElement(ApiSettings, { credentials, setCredentials, rateLimit, setRateLimit }));
   }
   function Header({ card }) {
     return /* @__PURE__ */ import_react.default.createElement("header", { className: "app-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, "RENAISS OS"), /* @__PURE__ */ import_react.default.createElement("h1", null, "Index Companion")), /* @__PURE__ */ import_react.default.createElement("div", { className: "header-actions" }, card?.href && /* @__PURE__ */ import_react.default.createElement("a", { className: "icon-link", target: "_blank", rel: "noreferrer", href: `${INDEX_BASE}${card.href}`, "aria-label": "Open card on Renaiss Index" }, "\u2197"), /* @__PURE__ */ import_react.default.createElement("button", { className: "close-button", type: "button", onClick: () => window.parent.postMessage({ source: "renaiss-index-companion", action: "close-modal" }, "*"), "aria-label": "Close companion" }, "\xD7")));
@@ -23756,8 +23770,8 @@
   function Loading() {
     return /* @__PURE__ */ import_react.default.createElement("section", { className: "state-card" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "spinner" }), /* @__PURE__ */ import_react.default.createElement("p", null, "Loading current card data\u2026"));
   }
-  function CardDetails({ card, fmv, trades }) {
-    return /* @__PURE__ */ import_react.default.createElement("section", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "identity-row" }, card.imageUrl && /* @__PURE__ */ import_react.default.createElement("img", { className: "card-image", src: card.imageUrl, alt: card.name }), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, card.name), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, [card.setName, card.cardNumber, card.variation, card.language].filter(Boolean).join(" \xB7 ")))), /* @__PURE__ */ import_react.default.createElement("section", { className: "hero-price" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, card.gradeLabel || [card.company, card.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("p", { className: "price" }, formatUsd(card.priceUsdCents)), /* @__PURE__ */ import_react.default.createElement("p", { className: "confidence" }, card.confidence ? `${card.confidence} confidence` : "Price confidence unavailable")), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid" }, [["7D", card.deltas?.d7], ["30D", card.deltas?.d30], ["1Y", card.deltas?.d365]].map(([label, value]) => /* @__PURE__ */ import_react.default.createElement("article", { key: label }, /* @__PURE__ */ import_react.default.createElement("span", null, label), /* @__PURE__ */ import_react.default.createElement("strong", { className: value >= 0 ? "positive" : "negative" }, formatDelta(value))))), /* @__PURE__ */ import_react.default.createElement(FmvChart, { points: fmv?.points || [] }), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid details-grid" }, /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Sources"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.sourceCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Observations"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.observationCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Last observed"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatDate(card.lastSaleAt || card.updatedAt)))), /* @__PURE__ */ import_react.default.createElement("p", { className: "source-summary" }, (card.sourceBreakdown || []).map((source) => `${source.displayName} (${formatNumber(source.count)})`).join(" \xB7 ")), (card.otherGrades || []).filter((grade) => grade.priceUsdCents != null).length > 0 && /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Other grades")), /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-list" }, card.otherGrades.filter((grade) => grade.priceUsdCents != null).slice(0, 6).map((grade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("span", null, grade.gradeLabel || [grade.company, grade.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(grade.priceUsdCents)))))), /* @__PURE__ */ import_react.default.createElement(Trades, { trades }));
+  function CardDetails({ card, fmv, trades, pageMetadata }) {
+    return /* @__PURE__ */ import_react.default.createElement("section", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "identity-row" }, card.imageUrl && /* @__PURE__ */ import_react.default.createElement("img", { className: "card-image", src: card.imageUrl, alt: card.name }), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, card.name), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, [card.setName, card.cardNumber, card.variation, card.language].filter(Boolean).join(" \xB7 ")))), (pageMetadata?.renaissItemId || pageMetadata?.serial) && /* @__PURE__ */ import_react.default.createElement("p", { className: "page-card-context" }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Detected Renaiss card"), pageMetadata.renaissItemId && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Item ", shortId(pageMetadata.renaissItemId)), pageMetadata.serial && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Cert ", pageMetadata.serial)), /* @__PURE__ */ import_react.default.createElement("section", { className: "hero-price" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, card.gradeLabel || [card.company, card.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("p", { className: "price" }, formatUsd(card.priceUsdCents)), /* @__PURE__ */ import_react.default.createElement("p", { className: "confidence" }, card.confidence ? `${card.confidence} confidence` : "Price confidence unavailable")), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid" }, [["7D", card.deltas?.d7], ["30D", card.deltas?.d30], ["1Y", card.deltas?.d365]].map(([label, value]) => /* @__PURE__ */ import_react.default.createElement("article", { key: label }, /* @__PURE__ */ import_react.default.createElement("span", null, label), /* @__PURE__ */ import_react.default.createElement("strong", { className: value >= 0 ? "positive" : "negative" }, formatDelta(value))))), /* @__PURE__ */ import_react.default.createElement(FmvChart, { points: fmv?.points || [] }), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid details-grid" }, /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Sources"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.sourceCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Observations"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.observationCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Last observed"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatDate(card.lastSaleAt || card.updatedAt)))), /* @__PURE__ */ import_react.default.createElement("p", { className: "source-summary" }, (card.sourceBreakdown || []).map((source) => `${source.displayName} (${formatNumber(source.count)})`).join(" \xB7 ")), (card.otherGrades || []).filter((grade) => grade.priceUsdCents != null).length > 0 && /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Other grades")), /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-list" }, card.otherGrades.filter((grade) => grade.priceUsdCents != null).slice(0, 6).map((grade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("span", null, grade.gradeLabel || [grade.company, grade.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(grade.priceUsdCents)))))), /* @__PURE__ */ import_react.default.createElement(Trades, { trades }));
   }
   function FmvChart({ points }) {
     const valid = points.filter((point) => Number.isFinite(point.usdCents));
@@ -23828,6 +23842,9 @@
   }
   function formatDelta(value) {
     return Number.isFinite(value) ? `${value > 0 ? "+" : ""}${value.toFixed(1)}%` : "\u2014";
+  }
+  function shortId(value) {
+    return value.length > 18 ? `${value.slice(0, 8)}\u2026${value.slice(-6)}` : value;
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();
