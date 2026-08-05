@@ -19,6 +19,32 @@
         </div>
       </header>
 
+      <section class="index-section" aria-labelledby="index-comparison-title">
+        <div class="section-heading index-heading">
+          <div>
+            <p class="eyebrow">MARKET OVERVIEW</p>
+            <h2 id="index-comparison-title">Renaiss Index comparison</h2>
+          </div>
+          <span class="muted">Hover a line for daily value</span>
+        </div>
+        <div class="index-grid">
+          <article class="index-card">
+            <div class="index-card-header"><span class="index-dot one-piece-dot"></span><strong>One Piece</strong><span id="one-piece-index-status" class="muted">Waiting for API access</span></div>
+            <p id="one-piece-index-value" class="index-value">—</p>
+            <p id="one-piece-index-change" class="index-change">—</p>
+            <div id="one-piece-index-chart" class="index-chart" role="img" aria-label="One Piece index value chart"></div>
+            <div id="one-piece-index-tooltip" class="index-tooltip is-hidden"></div>
+          </article>
+          <article class="index-card">
+            <div class="index-card-header"><span class="index-dot pokemon-dot"></span><strong>Pokémon</strong><span id="pokemon-index-status" class="muted">Waiting for API access</span></div>
+            <p id="pokemon-index-value" class="index-value">—</p>
+            <p id="pokemon-index-change" class="index-change">—</p>
+            <div id="pokemon-index-chart" class="index-chart" role="img" aria-label="Pokémon index value chart"></div>
+            <div id="pokemon-index-tooltip" class="index-tooltip is-hidden"></div>
+          </article>
+        </div>
+      </section>
+
       <section id="loading-state" class="state-card is-hidden">
         <span class="spinner" aria-hidden="true"></span>
         <p>Loading Renaiss Index data…</p>
