@@ -27,6 +27,9 @@ function bindEvents() {
   });
   $('save-settings').addEventListener('click', saveCredentials);
   $('clear-settings').addEventListener('click', clearCredentials);
+  $('close-modal').addEventListener('click', () => {
+    window.parent.postMessage({ source: 'renaiss-index-companion', action: 'close-modal' }, '*');
+  });
 }
 
 async function getActiveCardContext() {
@@ -180,6 +183,9 @@ function renderCard(card, fmv, trades) {
   $('source-count').textContent = formatNumber(card.sourceCount);
   $('observation-count').textContent = formatNumber(card.observationCount);
   $('last-sale').textContent = formatDate(card.lastSaleAt || card.updatedAt);
+  $('source-summary').textContent = (card.sourceBreakdown || [])
+    .map((source) => `${source.displayName} (${formatNumber(source.count)})`)
+    .join(' · ');
   renderImage(card);
   renderChart(fmv?.points || []);
   renderGrades(card.otherGrades || []);
