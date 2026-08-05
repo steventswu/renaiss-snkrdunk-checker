@@ -5,9 +5,11 @@ chrome.action.onClicked.addListener(async (tab) => {
   // load their data automatically; every other web page opens search mode.
   if (!tab.id || !WEB_PAGE_PATTERN.test(tab.url || '')) return;
   try {
-    await chrome.tabs.sendMessage(tab.id, { action: 'toggleModal' });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['page-bridge.js'], world: 'MAIN' });
+    await chrome.tabs.sendMessage(tab.id, { action: 'toggleModal', cardUrl: tab.url });
   } catch (error) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-    await chrome.tabs.sendMessage(tab.id, { action: 'toggleModal' });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['page-bridge.js'], world: 'MAIN' });
+    await chrome.tabs.sendMessage(tab.id, { action: 'toggleModal', cardUrl: tab.url });
   }
 });
