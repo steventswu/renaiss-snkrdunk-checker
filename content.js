@@ -4,7 +4,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getCardMetadata') {
     sendResponse(getCardMetadata());
   } else if (request.action === 'toggleModal') {
-    toggleModal(request.cardUrl);
+    toggleModal();
     sendResponse({ open: Boolean(document.getElementById('renaiss-index-companion-modal')) });
   }
 });
@@ -14,7 +14,10 @@ let lastCardUrl = location.href;
 let cardChangeTimer = null;
 let cardUrlWatcher = null;
 
-function toggleModal(cardUrl = location.href) {
+function toggleModal() {
+  // Chrome's Tab.url may lag behind Renaiss's client-side router. The page
+  // context is the source of truth for the card the user is actually viewing.
+  const cardUrl = location.href;
   const existing = document.getElementById('renaiss-index-companion-modal');
   if (existing) {
     if (existing.dataset.open === 'true') {
@@ -106,14 +109,17 @@ window.addEventListener('message', (event) => {
   const frame = document.getElementById('renaiss-index-companion-frame');
   if (event.source !== frame?.contentWindow) return;
   if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'close-modal') closeModal();
-  if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'get-active-card-url') {
-    frame.contentWindow.postMessage({
-      source: 'renaiss-index-companion',
-      action: 'active-card-url',
-      cardUrl: location.href
-    }, '*');
-  }
+  if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'get-active-card-context') sendActiveCardContext(frame);
 });
+
+function sendActiveCardContext(frame) {
+  frame.contentWindow.postMessage({
+    source: 'renaiss-index-companion',
+    action: 'active-card-context',
+    cardUrl: location.href,
+    metadata: getCardMetadata()
+  }, '*');
+}
 
 function notifyCardChange() {
   notifyRouteChange(location.href);

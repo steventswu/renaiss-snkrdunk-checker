@@ -67,6 +67,25 @@ async function identifyLegacyCard(context, credentials, onRateLimit, signal) {
   return request(`/cards/by-id/${encodeURIComponent(match.ids[0])}`, credentials, onRateLimit, { signal });
 }
 
+async function resolveCard(context, metadata, credentials, onRateLimit, signal) {
+  // The current page's certification number identifies the exact slab even
+  // when Renaiss navigates client-side and its route state is still settling.
+  if (metadata?.serial) {
+    try {
+      const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, credentials, onRateLimit, { signal });
+      if (graded.found && graded.card?.href) return request(graded.card.href.replace(/^\/card/, '/cards'), credentials, onRateLimit, { signal });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
+  }
+  try {
+    return await request(context.apiPath, credentials, onRateLimit, { signal });
+  } catch (error) {
+    if (!context.legacyItemId || error.status !== 404) throw error;
+    return identifyLegacyCard(context, credentials, onRateLimit, signal);
+  }
+}
+
 function App() {
   const initialCardUrl = new URLSearchParams(window.location.search).get('cardUrl');
   const [credentials, setCredentials] = useState(null);
@@ -85,13 +104,17 @@ function App() {
 
   useEffect(() => {
     const receiveUrl = (event) => {
-      if (event.source !== window.parent || event.data?.source !== 'renaiss-index-companion' || event.data?.action !== 'refresh-active-card') return;
-      setCardTarget((current) => ({ url: event.data.cardUrl || current.url, revision: current.revision + 1 }));
+      if (event.source !== window.parent || event.data?.source !== 'renaiss-index-companion') return;
+      if (event.data.action === 'active-card-context') {
+        setCardTarget((current) => ({ url: event.data.cardUrl || current.url, metadata: event.data.metadata || null, revision: current.revision + 1 }));
+      } else if (event.data.action === 'refresh-active-card') {
+        window.parent.postMessage({ source: 'renaiss-index-companion', action: 'get-active-card-context' }, '*');
+      }
     };
     const receiveTabUrl = async (tabId, changeInfo) => {
       if (!changeInfo.url) return;
       const tab = await activeTab();
-      if (tab?.id === tabId) setCardTarget((current) => ({ url: changeInfo.url, revision: current.revision + 1 }));
+      if (tab?.id === tabId) setCardTarget((current) => ({ url: changeInfo.url, metadata: null, revision: current.revision + 1 }));
     };
     window.addEventListener('message', receiveUrl);
     chrome.tabs.onUpdated.addListener(receiveTabUrl);
@@ -102,7 +125,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    window.parent.postMessage({ source: 'renaiss-index-companion', action: 'get-active-card-url' }, '*');
+    window.parent.postMessage({ source: 'renaiss-index-companion', action: 'get-active-card-context' }, '*');
   }, []);
 
   useEffect(() => {
@@ -136,13 +159,7 @@ function App() {
       }
       setCardState({ status: 'loading', card: null, fmv: null, trades: null, error: '' });
       try {
-        let card;
-        try {
-          card = await request(context.apiPath, credentials, setRateLimit, { signal: controller.signal });
-        } catch (error) {
-          if (!context.legacyItemId || error.status !== 404) throw error;
-          card = await identifyLegacyCard(context, credentials, setRateLimit, controller.signal);
-        }
+        const card = await resolveCard(context, cardTarget.metadata, credentials, setRateLimit, controller.signal);
         const [fmv, trades] = await Promise.all([
           request(`/cards/by-id/${encodeURIComponent(card.id)}/fmv-series`, credentials, setRateLimit, { signal: controller.signal }),
           request(`/cards/by-id/${encodeURIComponent(card.id)}/trades`, credentials, setRateLimit, { signal: controller.signal })
@@ -160,8 +177,8 @@ function App() {
     <Header card={cardState.card} />
     <IndexComparison indices={indices} />
     {cardState.status === 'loading' && <Loading />}
-    {cardState.status === 'ready' && <CardDetails card={cardState.card} fmv={cardState.fmv} trades={cardState.trades} />}
-    {(cardState.status === 'empty' || cardState.status === 'error') && <SearchPanel credentials={credentials} onRateLimit={setRateLimit} onCardUrl={(url) => setCardTarget((current) => ({ url, revision: current.revision + 1 }))} message={cardState.error} />}
+    {cardState.status === 'ready' && <CardDetails card={cardState.card} fmv={cardState.fmv} trades={cardState.trades} pageMetadata={cardTarget.metadata} />}
+    {(cardState.status === 'empty' || cardState.status === 'error') && <SearchPanel credentials={credentials} onRateLimit={setRateLimit} onCardUrl={(url) => setCardTarget((current) => ({ url, metadata: null, revision: current.revision + 1 }))} message={cardState.error} />}
     <ApiSettings credentials={credentials} setCredentials={setCredentials} rateLimit={rateLimit} setRateLimit={setRateLimit} />
   </main>;
 }
@@ -197,8 +214,9 @@ function IndexCard({ title, game, detail, series, error }) {
 
 function Loading() { return <section className="state-card"><span className="spinner"/><p>Loading current card data…</p></section>; }
 
-function CardDetails({ card, fmv, trades }) {
+function CardDetails({ card, fmv, trades, pageMetadata }) {
   return <section><div className="identity-row">{card.imageUrl && <img className="card-image" src={card.imageUrl} alt={card.name}/>}<div><h2>{card.name}</h2><p className="muted">{[card.setName, card.cardNumber, card.variation, card.language].filter(Boolean).join(' · ')}</p></div></div>
+    {(pageMetadata?.renaissItemId || pageMetadata?.serial) && <p className="page-card-context"><strong>Detected Renaiss card</strong>{pageMetadata.renaissItemId && <> · Item {shortId(pageMetadata.renaissItemId)}</>}{pageMetadata.serial && <> · Cert {pageMetadata.serial}</>}</p>}
     <section className="hero-price"><p className="eyebrow">{card.gradeLabel || [card.company, card.grade].filter(Boolean).join(' ')}</p><p className="price">{formatUsd(card.priceUsdCents)}</p><p className="confidence">{card.confidence ? `${card.confidence} confidence` : 'Price confidence unavailable'}</p></section>
     <section className="stat-grid">{[['7D', card.deltas?.d7], ['30D', card.deltas?.d30], ['1Y', card.deltas?.d365]].map(([label, value]) => <article key={label}><span>{label}</span><strong className={value >= 0 ? 'positive' : 'negative'}>{formatDelta(value)}</strong></article>)}</section>
     <FmvChart points={fmv?.points || []}/>
@@ -223,5 +241,6 @@ function formatIndexValue(value) { return Number.isFinite(value) ? new Intl.Numb
 function formatIndexDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? 'Unknown date' : new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date); }
 function formatDate(value) { const date = new Date(value); return value && !Number.isNaN(date.getTime()) ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date) : '—'; }
 function formatDelta(value) { return Number.isFinite(value) ? `${value > 0 ? '+' : ''}${value.toFixed(1)}%` : '—'; }
+function shortId(value) { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value; }
 
 createRoot(document.getElementById('root')).render(<App />);
