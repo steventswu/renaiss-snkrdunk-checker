@@ -4,7 +4,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getCardMetadata') {
     sendResponse(getCardMetadata());
   } else if (request.action === 'toggleModal') {
-    toggleModal();
+    toggleModal(request.cardUrl);
     sendResponse({ open: Boolean(document.getElementById('renaiss-index-companion-modal')) });
   }
 });
@@ -14,18 +14,21 @@ let lastCardUrl = location.href;
 let cardChangeTimer = null;
 let cardUrlWatcher = null;
 
-function toggleModal() {
+function toggleModal(cardUrl = location.href) {
   const existing = document.getElementById('renaiss-index-companion-modal');
   if (existing) {
     if (existing.dataset.open === 'true') {
       closeModal();
     } else {
       lastFocusedElement = document.activeElement;
-      openModal(existing);
+      openModal(existing, cardUrl);
     }
     return;
   }
 
+  // A new iframe must always begin with the exact URL from the extension
+  // click. This avoids retaining a previous card's React state after close.
+  lastCardUrl = cardUrl;
   lastFocusedElement = document.activeElement;
   const overlay = document.createElement('div');
   overlay.id = 'renaiss-index-companion-modal';
@@ -42,7 +45,7 @@ function toggleModal() {
 
   const frame = document.createElement('iframe');
   frame.id = 'renaiss-index-companion-frame';
-  frame.src = chrome.runtime.getURL('popup.html');
+  frame.src = `${chrome.runtime.getURL('popup.html')}?cardUrl=${encodeURIComponent(cardUrl)}`;
   frame.title = 'Renaiss Index Companion';
   frame.style.cssText = [
     'width:min(1080px, 100%)', 'height:min(900px, calc(100vh - 36px))',
@@ -61,23 +64,29 @@ function toggleModal() {
   installModalStyles();
 }
 
-function openModal(overlay) {
+function openModal(overlay, cardUrl = location.href) {
   overlay.style.display = 'grid';
   overlay.dataset.open = 'true';
   overlay.removeAttribute('aria-hidden');
   document.addEventListener('keydown', onModalKeydown);
   const frame = document.getElementById('renaiss-index-companion-frame');
   frame?.focus();
-  frame?.contentWindow?.postMessage({ source: 'renaiss-index-companion', action: 'refresh-active-card' }, '*');
+  frame?.contentWindow?.postMessage({
+    source: 'renaiss-index-companion',
+    action: 'refresh-active-card',
+    cardUrl
+  }, '*');
 }
 
 function closeModal() {
   const overlay = document.getElementById('renaiss-index-companion-modal');
   if (!overlay) return;
   document.removeEventListener('keydown', onModalKeydown);
-  overlay.style.display = 'none';
-  overlay.dataset.open = 'false';
-  overlay.setAttribute('aria-hidden', 'true');
+  overlay.remove();
+  if (cardUrlWatcher) {
+    window.clearInterval(cardUrlWatcher);
+    cardUrlWatcher = null;
+  }
   lastFocusedElement?.focus?.();
 }
 
@@ -97,19 +106,35 @@ window.addEventListener('message', (event) => {
   const frame = document.getElementById('renaiss-index-companion-frame');
   if (event.source !== frame?.contentWindow) return;
   if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'close-modal') closeModal();
+  if (event.data?.source === 'renaiss-index-companion' && event.data?.action === 'get-active-card-url') {
+    frame.contentWindow.postMessage({
+      source: 'renaiss-index-companion',
+      action: 'active-card-url',
+      cardUrl: location.href
+    }, '*');
+  }
 });
 
 function notifyCardChange() {
-  if (location.href === lastCardUrl) return;
-  lastCardUrl = location.href;
+  notifyRouteChange(location.href);
+}
+
+function notifyRouteChange(cardUrl) {
+  if (!cardUrl || cardUrl === lastCardUrl) return;
+  lastCardUrl = cardUrl;
   clearTimeout(cardChangeTimer);
   cardChangeTimer = setTimeout(() => {
     document.getElementById('renaiss-index-companion-frame')?.contentWindow?.postMessage({
       source: 'renaiss-index-companion',
-      action: 'refresh-active-card'
+      action: 'refresh-active-card',
+      cardUrl: lastCardUrl
     }, '*');
   }, 250);
 }
+
+window.addEventListener('renaiss-index-route-change', (event) => {
+  notifyRouteChange(event.detail?.url);
+});
 
 for (const method of ['pushState', 'replaceState']) {
   const original = history[method];

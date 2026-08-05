@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Renaiss Index Companion",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "View Renaiss Index pricing, market history, and grade data while browsing Renaiss OS.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
@@ -24,13 +24,23 @@
         "https://www.renaiss.xyz/card/*",
         "https://index.renaissos.com/card/*"
       ],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://renaiss.xyz/card/*",
+        "https://www.renaiss.xyz/card/*",
+        "https://index.renaissos.com/card/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["popup.html", "popup.js", "popup.css"],
+      "resources": ["popup.html", "popup.bundle.js", "popup.css"],
       "matches": ["<all_urls>"]
     }
   ]

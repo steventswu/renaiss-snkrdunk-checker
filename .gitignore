@@ -7,3 +7,4 @@
 *.p12
 *.secret
 secrets/
+node_modules/
