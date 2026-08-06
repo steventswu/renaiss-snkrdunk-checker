@@ -1112,7 +1112,7 @@
             var dispatcher = resolveDispatcher();
             return dispatcher.useCallback(callback, deps);
           }
-          function useMemo(create, deps) {
+          function useMemo2(create, deps) {
             var dispatcher = resolveDispatcher();
             return dispatcher.useMemo(create, deps);
           }
@@ -1884,7 +1884,7 @@
           exports.useImperativeHandle = useImperativeHandle;
           exports.useInsertionEffect = useInsertionEffect;
           exports.useLayoutEffect = useLayoutEffect;
-          exports.useMemo = useMemo;
+          exports.useMemo = useMemo2;
           exports.useReducer = useReducer;
           exports.useRef = useRef2;
           exports.useState = useState2;
@@ -23584,9 +23584,8 @@
   // src/popup.jsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
-  var API_BASE = "https://api.renaissos.com/v1";
+  var API_BASE = "http://127.0.0.1:8787/v1";
   var INDEX_BASE = "https://index.renaissos.com";
-  var CREDENTIAL_KEYS = ["renaissApiKey", "renaissApiSecret"];
   function cardContextForUrl(rawUrl, tabId) {
     if (!rawUrl) return null;
     const url = new URL(rawUrl);
@@ -23604,17 +23603,18 @@
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     return tab;
   }
-  async function request(path, credentials, onRateLimit, options = {}) {
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      cache: options.cache || "no-store",
-      headers: {
-        Accept: "application/json",
-        "X-Api-Key": credentials.renaissApiKey,
-        "X-Api-Secret": credentials.renaissApiSecret,
-        ...options.headers || {}
-      }
-    });
+  async function request(path, onRateLimit, options = {}) {
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        cache: options.cache || "no-store",
+        headers: { Accept: "application/json", ...options.headers || {} }
+      });
+    } catch (error) {
+      if (error.name === "AbortError") throw error;
+      throw new Error("Secure API proxy unavailable. Start it with npm run proxy.");
+    }
     const remaining = response.headers.get("X-RateLimit-Remaining");
     const limit = response.headers.get("X-RateLimit-Limit");
     if (remaining && limit) onRateLimit(`API requests remaining: ${remaining} of ${limit}.`);
@@ -23626,12 +23626,19 @@
     }
     return response.json();
   }
-  async function identifyLegacyCard(context, credentials, onRateLimit, signal, currentMetadata) {
+  async function cardFromCertification(metadata, onRateLimit, signal, onPreview) {
+    if (!metadata?.serial) return null;
+    const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, onRateLimit, { signal });
+    if (!graded.found || !graded.card?.href) return null;
+    onPreview?.(graded.card);
+    return request(graded.card.href.replace(/^\/card/, "/cards"), onRateLimit, { signal });
+  }
+  async function identifyLegacyCard(context, onRateLimit, signal, currentMetadata, skipCertification = false, onPreview) {
     const metadata = currentMetadata?.ready ? currentMetadata : await chrome.tabs.sendMessage(context.tabId, { action: "getCardMetadata" });
-    if (metadata?.serial) {
+    if (!skipCertification && metadata?.serial) {
       try {
-        const graded = await request(`/graded/${encodeURIComponent(metadata.serial)}`, credentials, onRateLimit, { signal });
-        if (graded.found && graded.card?.href) return request(graded.card.href.replace(/^\/card/, "/cards"), credentials, onRateLimit, { signal });
+        const card = await cardFromCertification(metadata, onRateLimit, signal, onPreview);
+        if (card) return card;
       } catch (error) {
         if (error.status !== 404) throw error;
       }
@@ -23641,29 +23648,35 @@
     if (!image.ok) throw new Error("The card image could not be read for identification.");
     const form = new FormData();
     form.append("file", await image.blob(), "renaiss-card.jpg");
-    const match = await request("/search/by-image?limit=5", credentials, onRateLimit, { method: "POST", body: form, signal });
+    const match = await request("/search/by-image?limit=5", onRateLimit, { method: "POST", body: form, signal });
     if (!match.ids?.length || match.confidence === "low" || match.confidence === "none") throw new Error("The card image match was uncertain. Try a clearer card image.");
-    return request(`/cards/by-id/${encodeURIComponent(match.ids[0])}`, credentials, onRateLimit, { signal });
+    return request(`/cards/by-id/${encodeURIComponent(match.ids[0])}`, onRateLimit, { signal });
   }
-  async function resolveCard(context, metadata, credentials, onRateLimit, signal) {
+  async function resolveCard(context, metadata, onRateLimit, signal, onPreview) {
+    if (context.legacyItemId && metadata?.serial) {
+      try {
+        const card = await cardFromCertification(metadata, onRateLimit, signal, onPreview);
+        if (card) return card;
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
     try {
-      return await request(context.apiPath, credentials, onRateLimit, { signal });
+      return await request(context.apiPath, onRateLimit, { signal });
     } catch (error) {
       if (!context.legacyItemId || error.status !== 404) throw error;
-      return identifyLegacyCard(context, credentials, onRateLimit, signal, metadata);
+      return identifyLegacyCard(context, onRateLimit, signal, metadata, Boolean(metadata?.serial), onPreview);
     }
   }
   function App() {
     const initialCardUrl = new URLSearchParams(window.location.search).get("cardUrl");
-    const [credentials, setCredentials] = (0, import_react.useState)(null);
     const [cardTarget, setCardTarget] = (0, import_react.useState)({ url: initialCardUrl, revision: 0 });
-    const [cardState, setCardState] = (0, import_react.useState)({ status: "idle", card: null, fmv: null, trades: null, error: "" });
-    const [indices, setIndices] = (0, import_react.useState)(null);
+    const [cardState, setCardState] = (0, import_react.useState)({ status: "idle", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: "" });
+    const [indices, setIndices] = (0, import_react.useState)({});
     const [rateLimit, setRateLimit] = (0, import_react.useState)("");
     const requestVersion = (0, import_react.useRef)(0);
     (0, import_react.useEffect)(() => {
-      Promise.all([chrome.storage.session.get(CREDENTIAL_KEYS), activeTab()]).then(([saved, tab]) => {
-        setCredentials({ renaissApiKey: saved.renaissApiKey || "", renaissApiSecret: saved.renaissApiSecret || "" });
+      activeTab().then((tab) => {
         if (!initialCardUrl) setCardTarget({ url: tab?.url || null, revision: 0 });
       });
     }, []);
@@ -23692,100 +23705,116 @@
       window.parent.postMessage({ source: "renaiss-index-companion", action: "get-active-card-context" }, "*");
     }, []);
     (0, import_react.useEffect)(() => {
-      if (!credentials?.renaissApiKey || !credentials?.renaissApiSecret) return;
-      let alive = true;
-      Promise.all([
-        request("/indices/one-piece", credentials, setRateLimit),
-        request("/indices/one-piece/series?window=365", credentials, setRateLimit),
-        request("/indices/pokemon", credentials, setRateLimit),
-        request("/indices/pokemon/series?window=365", credentials, setRateLimit)
-      ]).then(([onePiece, onePieceSeries, pokemon, pokemonSeries]) => {
-        if (alive) setIndices({ onePiece, onePieceSeries, pokemon, pokemonSeries });
-      }).catch(() => alive && setIndices({ error: true }));
-      return () => {
-        alive = false;
-      };
-    }, [credentials?.renaissApiKey, credentials?.renaissApiSecret]);
+      const controller = new AbortController();
+      const loads = [
+        ["onePiece", "/indices/one-piece"],
+        ["onePieceSeries", "/indices/one-piece/series?window=365"],
+        ["pokemon", "/indices/pokemon"],
+        ["pokemonSeries", "/indices/pokemon/series?window=365"]
+      ];
+      loads.forEach(([key, path]) => {
+        request(path, setRateLimit, { signal: controller.signal }).then((value) => {
+          setIndices((current) => ({ ...current, [key]: value }));
+        }).catch((error) => {
+          if (error.name !== "AbortError") setIndices((current) => ({ ...current, [`${key}Error`]: true }));
+        });
+      });
+      return () => controller.abort();
+    }, []);
     (0, import_react.useEffect)(() => {
-      if (!credentials) return;
       const version = ++requestVersion.current;
       const controller = new AbortController();
       const load = async () => {
         const tab = await activeTab();
         const context = cardContextForUrl(cardTarget.url, tab?.id);
         if (!context) {
-          if (version === requestVersion.current) setCardState({ status: "empty", card: null, fmv: null, trades: null, error: "Open a Renaiss card page or search the Index." });
-          return;
-        }
-        if (!credentials.renaissApiKey || !credentials.renaissApiSecret) {
-          if (version === requestVersion.current) setCardState({ status: "empty", card: null, fmv: null, trades: null, error: "Enter both Renaiss API credentials in API access below." });
+          if (version === requestVersion.current) setCardState({ status: "empty", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: "Open a Renaiss card page or search the Index." });
           return;
         }
         if (context.legacyItemId && cardTarget.metadata?.timedOut) {
-          if (version === requestVersion.current) setCardState({ status: "error", card: null, fmv: null, trades: null, error: "Renaiss did not finish rendering this card. Close the modal and try again." });
+          if (version === requestVersion.current) setCardState({ status: "error", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: "Renaiss did not finish rendering this card. Close the modal and try again." });
           return;
         }
         if (context.legacyItemId && cardTarget.metadata?.ready !== true) {
-          if (version === requestVersion.current) setCardState({ status: "loading", card: null, fmv: null, trades: null, error: "" });
+          if (version === requestVersion.current) setCardState({ status: "loading", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: "" });
           return;
         }
-        setCardState({ status: "loading", card: null, fmv: null, trades: null, error: "" });
+        setCardState({ status: "loading", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: "" });
         try {
-          const card = await resolveCard(context, cardTarget.metadata, credentials, setRateLimit, controller.signal);
-          const [fmv, trades] = await Promise.all([
-            request(`/cards/by-id/${encodeURIComponent(card.id)}/fmv-series`, credentials, setRateLimit, { signal: controller.signal }),
-            request(`/cards/by-id/${encodeURIComponent(card.id)}/trades`, credentials, setRateLimit, { signal: controller.signal })
+          const showPreview = (card2) => {
+            if (version === requestVersion.current && !controller.signal.aborted) {
+              setCardState({ status: "ready", card: card2, fmv: null, trades: null, fmvStatus: "loading", tradesStatus: "loading", error: "" });
+            }
+          };
+          const card = await resolveCard(context, cardTarget.metadata, setRateLimit, controller.signal, showPreview);
+          if (version !== requestVersion.current || controller.signal.aborted) return;
+          setCardState({ status: "ready", card, fmv: null, trades: null, fmvStatus: "loading", tradesStatus: "loading", error: "" });
+          await Promise.allSettled([
+            request(`/cards/by-id/${encodeURIComponent(card.id)}/fmv-series`, setRateLimit, { signal: controller.signal }).then((fmv) => {
+              if (version === requestVersion.current) setCardState((current) => ({ ...current, fmv, fmvStatus: "ready" }));
+            }).catch((error) => {
+              if (error.name !== "AbortError" && version === requestVersion.current) setCardState((current) => ({ ...current, fmvStatus: "error" }));
+            }),
+            request(`/cards/by-id/${encodeURIComponent(card.id)}/trades`, setRateLimit, { signal: controller.signal }).then((trades) => {
+              if (version === requestVersion.current) setCardState((current) => ({ ...current, trades, tradesStatus: "ready" }));
+            }).catch((error) => {
+              if (error.name !== "AbortError" && version === requestVersion.current) setCardState((current) => ({ ...current, tradesStatus: "error" }));
+            })
           ]);
-          if (version === requestVersion.current) setCardState({ status: "ready", card, fmv, trades, error: "" });
         } catch (error) {
-          if (error.name !== "AbortError" && version === requestVersion.current) setCardState({ status: "error", card: null, fmv: null, trades: null, error: error.message });
+          if (error.name !== "AbortError" && version === requestVersion.current) setCardState({ status: "error", card: null, fmv: null, trades: null, fmvStatus: "idle", tradesStatus: "idle", error: error.message });
         }
       };
       load();
       return () => controller.abort();
-    }, [cardTarget, credentials]);
-    return /* @__PURE__ */ import_react.default.createElement("main", { className: "app-shell" }, /* @__PURE__ */ import_react.default.createElement(Header, { card: cardState.card }), /* @__PURE__ */ import_react.default.createElement(IndexComparison, { indices }), cardState.status === "loading" && /* @__PURE__ */ import_react.default.createElement(Loading, null), cardState.status === "ready" && /* @__PURE__ */ import_react.default.createElement(CardDetails, { card: cardState.card, fmv: cardState.fmv, trades: cardState.trades, pageMetadata: cardTarget.metadata }), (cardState.status === "empty" || cardState.status === "error") && /* @__PURE__ */ import_react.default.createElement(SearchPanel, { credentials, onRateLimit: setRateLimit, onCardUrl: (url) => setCardTarget((current) => ({ url, metadata: null, revision: current.revision + 1 })), message: cardState.error }), /* @__PURE__ */ import_react.default.createElement(ApiSettings, { credentials, setCredentials, rateLimit, setRateLimit }));
+    }, [cardTarget]);
+    return /* @__PURE__ */ import_react.default.createElement("main", { className: "app-shell" }, /* @__PURE__ */ import_react.default.createElement(Header, { card: cardState.card }), /* @__PURE__ */ import_react.default.createElement(IndexComparison, { indices }), cardState.status === "loading" && /* @__PURE__ */ import_react.default.createElement(Loading, null), cardState.status === "ready" && /* @__PURE__ */ import_react.default.createElement(CardDetails, { card: cardState.card, fmv: cardState.fmv, trades: cardState.trades, fmvStatus: cardState.fmvStatus, tradesStatus: cardState.tradesStatus, pageMetadata: cardTarget.metadata }), (cardState.status === "empty" || cardState.status === "error") && /* @__PURE__ */ import_react.default.createElement(SearchPanel, { onRateLimit: setRateLimit, onCardUrl: (url) => setCardTarget((current) => ({ url, metadata: null, revision: current.revision + 1 })), message: cardState.error }), /* @__PURE__ */ import_react.default.createElement(ProxyStatus, { rateLimit }));
   }
   function Header({ card }) {
     return /* @__PURE__ */ import_react.default.createElement("header", { className: "app-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, "RENAISS OS"), /* @__PURE__ */ import_react.default.createElement("h1", null, "Index Companion")), /* @__PURE__ */ import_react.default.createElement("div", { className: "header-actions" }, card?.href && /* @__PURE__ */ import_react.default.createElement("a", { className: "icon-link", target: "_blank", rel: "noreferrer", href: `${INDEX_BASE}${card.href}`, "aria-label": "Open card on Renaiss Index" }, "\u2197"), /* @__PURE__ */ import_react.default.createElement("button", { className: "close-button", type: "button", onClick: () => window.parent.postMessage({ source: "renaiss-index-companion", action: "close-modal" }, "*"), "aria-label": "Close companion" }, "\xD7")));
   }
   function IndexComparison({ indices }) {
-    return /* @__PURE__ */ import_react.default.createElement("section", { className: "index-section" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading index-heading" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, "MARKET OVERVIEW"), /* @__PURE__ */ import_react.default.createElement("h2", null, "Renaiss Index comparison")), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, "Hover a line for daily value")), /* @__PURE__ */ import_react.default.createElement("div", { className: "index-grid" }, /* @__PURE__ */ import_react.default.createElement(IndexCard, { title: "One Piece", game: "one-piece", detail: indices?.onePiece, series: indices?.onePieceSeries, error: indices?.error }), /* @__PURE__ */ import_react.default.createElement(IndexCard, { title: "Pok\xE9mon", game: "pokemon", detail: indices?.pokemon, series: indices?.pokemonSeries, error: indices?.error })));
+    return /* @__PURE__ */ import_react.default.createElement("section", { className: "index-section" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading index-heading" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, "MARKET OVERVIEW"), /* @__PURE__ */ import_react.default.createElement("h2", null, "Renaiss Index comparison")), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, "Hover a line for daily value")), /* @__PURE__ */ import_react.default.createElement("div", { className: "index-grid" }, /* @__PURE__ */ import_react.default.createElement(IndexCard, { title: "One Piece", game: "one-piece", detail: indices.onePiece, series: indices.onePieceSeries, detailError: indices.onePieceError, seriesError: indices.onePieceSeriesError }), /* @__PURE__ */ import_react.default.createElement(IndexCard, { title: "Pok\xE9mon", game: "pokemon", detail: indices.pokemon, series: indices.pokemonSeries, detailError: indices.pokemonError, seriesError: indices.pokemonSeriesError })));
   }
-  function IndexCard({ title, game, detail, series, error }) {
+  function IndexCard({ title, game, detail, series, detailError, seriesError }) {
     const [hover, setHover] = (0, import_react.useState)(null);
-    const points = (series?.points || []).filter((point) => Number.isFinite(point.value) && point.t);
-    const values = points.map((point) => point.value);
-    const min = Math.min(...values);
-    const range = Math.max(...values) - min || 1;
     const color = game === "one-piece" ? "#72d6bb" : "#ffcb5c";
-    const coordinates = points.map((point, index) => ({ x: points.length > 1 ? index / (points.length - 1) * 480 : 0, y: 150 - (point.value - min) / range * 150, point }));
-    const path = coordinates.map(({ x, y }, index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    const { coordinates, path } = (0, import_react.useMemo)(() => {
+      const points = (series?.points || []).filter((point) => Number.isFinite(point.value) && point.t);
+      const values = points.map((point) => point.value);
+      const min = Math.min(...values);
+      const range = Math.max(...values) - min || 1;
+      const nextCoordinates = points.map((point, index) => ({ x: points.length > 1 ? index / (points.length - 1) * 480 : 0, y: 150 - (point.value - min) / range * 150, point }));
+      return { coordinates: nextCoordinates, path: nextCoordinates.map(({ x, y }, index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ") };
+    }, [series]);
     const selected = hover === null ? null : coordinates[hover];
-    return /* @__PURE__ */ import_react.default.createElement("article", { className: "index-card" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "index-card-header" }, /* @__PURE__ */ import_react.default.createElement("span", { className: `index-dot ${game === "one-piece" ? "one-piece-dot" : "pokemon-dot"}` }), /* @__PURE__ */ import_react.default.createElement("strong", null, title), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, error ? "Unavailable" : detail ? `${formatNumber(detail.constituentCount)} cards` : "Loading\u2026")), /* @__PURE__ */ import_react.default.createElement("p", { className: "index-value" }, formatIndexValue(detail?.value)), /* @__PURE__ */ import_react.default.createElement("p", { className: `index-change ${detail?.deltas?.d365 >= 0 ? "positive" : "negative"}` }, Number.isFinite(detail?.deltas?.d365) ? `${detail.deltas.d365 > 0 ? "+" : ""}${detail.deltas.d365.toFixed(1)}% \xB7 1 year` : "\u2014"), coordinates.length > 1 ? /* @__PURE__ */ import_react.default.createElement("div", { className: "index-chart", onMouseLeave: () => setHover(null), onMouseMove: (event) => {
+    const chartEmpty = seriesError ? "Index history unavailable." : series ? "No index history available." : "Loading index history\u2026";
+    return /* @__PURE__ */ import_react.default.createElement("article", { className: "index-card" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "index-card-header" }, /* @__PURE__ */ import_react.default.createElement("span", { className: `index-dot ${game === "one-piece" ? "one-piece-dot" : "pokemon-dot"}` }), /* @__PURE__ */ import_react.default.createElement("strong", null, title), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, detailError ? "Unavailable" : detail ? `${formatNumber(detail.constituentCount)} cards` : "Loading\u2026")), /* @__PURE__ */ import_react.default.createElement("p", { className: "index-value" }, formatIndexValue(detail?.value)), /* @__PURE__ */ import_react.default.createElement("p", { className: `index-change ${detail?.deltas?.d365 >= 0 ? "positive" : "negative"}` }, Number.isFinite(detail?.deltas?.d365) ? `${detail.deltas.d365 > 0 ? "+" : ""}${detail.deltas.d365.toFixed(1)}% \xB7 1 year` : "\u2014"), coordinates.length > 1 ? /* @__PURE__ */ import_react.default.createElement("div", { className: "index-chart", onMouseLeave: () => setHover(null), onMouseMove: (event) => {
       const box = event.currentTarget.getBoundingClientRect();
       setHover(Math.round(Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * (coordinates.length - 1)));
-    } }, /* @__PURE__ */ import_react.default.createElement("svg", { viewBox: "0 0 480 150", preserveAspectRatio: "none", "aria-hidden": "true" }, /* @__PURE__ */ import_react.default.createElement("path", { d: `${path} L480,150 L0,150 Z`, fill: color, fillOpacity: ".13" }), /* @__PURE__ */ import_react.default.createElement("path", { d: path, fill: "none", stroke: color, strokeWidth: "2.5", vectorEffect: "non-scaling-stroke" }), selected && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("line", { x1: selected.x, x2: selected.x, y1: "0", y2: "150", className: "index-hover-line" }), /* @__PURE__ */ import_react.default.createElement("circle", { cx: selected.x, cy: selected.y, r: "4", fill: color, className: "index-hover-dot" }))), selected && /* @__PURE__ */ import_react.default.createElement("span", { className: "index-tooltip" }, formatIndexDate(selected.point.t), " \xB7 ", formatIndexValue(selected.point.value))) : /* @__PURE__ */ import_react.default.createElement("div", { className: "index-chart chart-empty" }, "No index history available."));
+    } }, /* @__PURE__ */ import_react.default.createElement("svg", { viewBox: "0 0 480 150", preserveAspectRatio: "none", "aria-hidden": "true" }, /* @__PURE__ */ import_react.default.createElement("path", { d: `${path} L480,150 L0,150 Z`, fill: color, fillOpacity: ".13" }), /* @__PURE__ */ import_react.default.createElement("path", { d: path, fill: "none", stroke: color, strokeWidth: "2.5", vectorEffect: "non-scaling-stroke" }), selected && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("line", { x1: selected.x, x2: selected.x, y1: "0", y2: "150", className: "index-hover-line" }), /* @__PURE__ */ import_react.default.createElement("circle", { cx: selected.x, cy: selected.y, r: "4", fill: color, className: "index-hover-dot" }))), selected && /* @__PURE__ */ import_react.default.createElement("span", { className: "index-tooltip" }, formatIndexDate(selected.point.t), " \xB7 ", formatIndexValue(selected.point.value))) : /* @__PURE__ */ import_react.default.createElement("div", { className: "index-chart chart-empty" }, chartEmpty));
   }
   function Loading() {
     return /* @__PURE__ */ import_react.default.createElement("section", { className: "state-card" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "spinner" }), /* @__PURE__ */ import_react.default.createElement("p", null, "Loading current card data\u2026"));
   }
-  function CardDetails({ card, fmv, trades, pageMetadata }) {
-    return /* @__PURE__ */ import_react.default.createElement("section", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "identity-row" }, card.imageUrl && /* @__PURE__ */ import_react.default.createElement("img", { className: "card-image", src: card.imageUrl, alt: card.name }), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, card.name), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, [card.setName, card.cardNumber, card.variation, card.language].filter(Boolean).join(" \xB7 ")))), (pageMetadata?.renaissItemId || pageMetadata?.serial) && /* @__PURE__ */ import_react.default.createElement("p", { className: "page-card-context" }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Detected Renaiss card"), pageMetadata.renaissItemId && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Item ", shortId(pageMetadata.renaissItemId)), pageMetadata.serial && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Cert ", pageMetadata.serial)), /* @__PURE__ */ import_react.default.createElement("section", { className: "hero-price" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, card.gradeLabel || [card.company, card.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("p", { className: "price" }, formatUsd(card.priceUsdCents)), /* @__PURE__ */ import_react.default.createElement("p", { className: "confidence" }, card.confidence ? `${card.confidence} confidence` : "Price confidence unavailable")), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid" }, [["7D", card.deltas?.d7], ["30D", card.deltas?.d30], ["1Y", card.deltas?.d365]].map(([label, value]) => /* @__PURE__ */ import_react.default.createElement("article", { key: label }, /* @__PURE__ */ import_react.default.createElement("span", null, label), /* @__PURE__ */ import_react.default.createElement("strong", { className: value >= 0 ? "positive" : "negative" }, formatDelta(value))))), /* @__PURE__ */ import_react.default.createElement(FmvChart, { points: fmv?.points || [] }), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid details-grid" }, /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Sources"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.sourceCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Observations"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.observationCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Last observed"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatDate(card.lastSaleAt || card.updatedAt)))), /* @__PURE__ */ import_react.default.createElement("p", { className: "source-summary" }, (card.sourceBreakdown || []).map((source) => `${source.displayName} (${formatNumber(source.count)})`).join(" \xB7 ")), (card.otherGrades || []).filter((grade) => grade.priceUsdCents != null).length > 0 && /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Other grades")), /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-list" }, card.otherGrades.filter((grade) => grade.priceUsdCents != null).slice(0, 6).map((grade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("span", null, grade.gradeLabel || [grade.company, grade.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(grade.priceUsdCents)))))), /* @__PURE__ */ import_react.default.createElement(Trades, { trades }));
+  function CardDetails({ card, fmv, trades, fmvStatus, tradesStatus, pageMetadata }) {
+    return /* @__PURE__ */ import_react.default.createElement("section", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "identity-row" }, card.imageUrl && /* @__PURE__ */ import_react.default.createElement("img", { className: "card-image", src: card.imageUrl, alt: card.name }), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, card.name), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, [card.setName, card.cardNumber, card.variation, card.language].filter(Boolean).join(" \xB7 ")))), (pageMetadata?.renaissItemId || pageMetadata?.serial) && /* @__PURE__ */ import_react.default.createElement("p", { className: "page-card-context" }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Detected Renaiss card"), pageMetadata.renaissItemId && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Item ", shortId(pageMetadata.renaissItemId)), pageMetadata.serial && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, " \xB7 Cert ", pageMetadata.serial)), /* @__PURE__ */ import_react.default.createElement("section", { className: "hero-price" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, card.gradeLabel || [card.company, card.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("p", { className: "price" }, formatUsd(card.priceUsdCents)), /* @__PURE__ */ import_react.default.createElement("p", { className: "confidence" }, card.confidence ? `${card.confidence} confidence` : "Price confidence unavailable")), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid" }, [["7D", card.deltas?.d7], ["30D", card.deltas?.d30], ["1Y", card.deltas?.d365]].map(([label, value]) => /* @__PURE__ */ import_react.default.createElement("article", { key: label }, /* @__PURE__ */ import_react.default.createElement("span", null, label), /* @__PURE__ */ import_react.default.createElement("strong", { className: value >= 0 ? "positive" : "negative" }, formatDelta(value))))), /* @__PURE__ */ import_react.default.createElement(FmvChart, { points: fmv?.points || [], status: fmvStatus }), /* @__PURE__ */ import_react.default.createElement("section", { className: "stat-grid details-grid" }, /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Sources"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.sourceCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Observations"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatNumber(card.observationCount))), /* @__PURE__ */ import_react.default.createElement("article", null, /* @__PURE__ */ import_react.default.createElement("span", null, "Last observed"), /* @__PURE__ */ import_react.default.createElement("strong", null, formatDate(card.lastSaleAt || card.updatedAt)))), /* @__PURE__ */ import_react.default.createElement("p", { className: "source-summary" }, (card.sourceBreakdown || []).map((source) => `${source.displayName} (${formatNumber(source.count)})`).join(" \xB7 ")), (card.otherGrades || []).filter((grade) => grade.priceUsdCents != null).length > 0 && /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Other grades")), /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-list" }, card.otherGrades.filter((grade) => grade.priceUsdCents != null).slice(0, 6).map((grade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "grade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("span", null, grade.gradeLabel || [grade.company, grade.grade].filter(Boolean).join(" ")), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(grade.priceUsdCents)))))), /* @__PURE__ */ import_react.default.createElement(Trades, { trades, status: tradesStatus }));
   }
-  function FmvChart({ points }) {
+  function FmvChart({ points, status }) {
     const valid = points.filter((point) => Number.isFinite(point.usdCents));
     const values = valid.map((point) => point.usdCents);
     const min = Math.min(...values);
     const range = Math.max(...values) - min || 1;
     const path = valid.map((point, index) => `${index ? "L" : "M"}${(index / Math.max(1, valid.length - 1) * 360).toFixed(1)},${(92 - (point.usdCents - min) / range * 92).toFixed(1)}`).join(" ");
-    return /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "30-day FMV"), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, valid.length ? `${valid.length} daily points` : "No history")), valid.length > 1 ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chart" }, /* @__PURE__ */ import_react.default.createElement("svg", { viewBox: "0 0 360 92", preserveAspectRatio: "none" }, /* @__PURE__ */ import_react.default.createElement("path", { d: `${path} L360,92 L0,92 Z`, fill: "#72d6bb", fillOpacity: ".18" }), /* @__PURE__ */ import_react.default.createElement("path", { d: path, fill: "none", stroke: "#72d6bb", strokeWidth: "2.5", vectorEffect: "non-scaling-stroke" }))) : /* @__PURE__ */ import_react.default.createElement("div", { className: "chart chart-empty" }, "No FMV history available."));
+    const emptyText = status === "loading" ? "Loading FMV history\u2026" : status === "error" ? "FMV history unavailable." : "No FMV history available.";
+    return /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "30-day FMV"), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, valid.length ? `${valid.length} daily points` : status === "loading" ? "Loading\u2026" : "No history")), valid.length > 1 ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chart" }, /* @__PURE__ */ import_react.default.createElement("svg", { viewBox: "0 0 360 92", preserveAspectRatio: "none" }, /* @__PURE__ */ import_react.default.createElement("path", { d: `${path} L360,92 L0,92 Z`, fill: "#72d6bb", fillOpacity: ".18" }), /* @__PURE__ */ import_react.default.createElement("path", { d: path, fill: "none", stroke: "#72d6bb", strokeWidth: "2.5", vectorEffect: "non-scaling-stroke" }))) : /* @__PURE__ */ import_react.default.createElement("div", { className: "chart chart-empty" }, emptyText));
   }
-  function Trades({ trades }) {
+  function Trades({ trades, status }) {
     const items = (trades?.trades || []).filter((trade) => trade.priceUsdCents != null).slice(0, 5);
-    return /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Recent market observations"), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, Number.isFinite(trades?.total) ? `${formatNumber(trades.total)} total` : "")), /* @__PURE__ */ import_react.default.createElement("div", { className: "trade-list" }, items.length ? items.map((trade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "trade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, trade.displayName || trade.source), /* @__PURE__ */ import_react.default.createElement("span", null, [trade.kind, formatDate(trade.observedAt)].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(trade.priceUsdCents)))) : /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, "No market observations available.")));
+    const emptyText = status === "loading" ? "Loading market observations\u2026" : status === "error" ? "Market observations unavailable." : "No market observations available.";
+    return /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "section-heading" }, /* @__PURE__ */ import_react.default.createElement("h3", null, "Recent market observations"), /* @__PURE__ */ import_react.default.createElement("span", { className: "muted" }, Number.isFinite(trades?.total) ? `${formatNumber(trades.total)} total` : status === "loading" ? "Loading\u2026" : "")), /* @__PURE__ */ import_react.default.createElement("div", { className: "trade-list" }, items.length ? items.map((trade, index) => /* @__PURE__ */ import_react.default.createElement("div", { className: "trade-row", key: index }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, trade.displayName || trade.source), /* @__PURE__ */ import_react.default.createElement("span", null, [trade.kind, formatDate(trade.observedAt)].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ import_react.default.createElement("strong", null, formatUsd(trade.priceUsdCents)))) : /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, emptyText)));
   }
-  function SearchPanel({ credentials, onRateLimit, onCardUrl, message }) {
+  function SearchPanel({ onRateLimit, onCardUrl, message }) {
     const [query, setQuery] = (0, import_react.useState)("");
     const [results, setResults] = (0, import_react.useState)([]);
     const [error, setError] = (0, import_react.useState)("");
@@ -23793,7 +23822,7 @@
       event.preventDefault();
       if (query.trim().length < 2) return;
       try {
-        const data = await request(`/search?q=${encodeURIComponent(query.trim())}&limit=12`, credentials, onRateLimit);
+        const data = await request(`/search?q=${encodeURIComponent(query.trim())}&limit=12`, onRateLimit);
         setResults(data.results || []);
         setError("");
       } catch (err) {
@@ -23802,26 +23831,8 @@
     };
     return /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("section", { className: "state-card" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "state-title" }, "Find a Renaiss Index card"), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, message)), /* @__PURE__ */ import_react.default.createElement("section", null, /* @__PURE__ */ import_react.default.createElement("form", { className: "search-form", onSubmit: search }, /* @__PURE__ */ import_react.default.createElement("label", null, "Find a card"), /* @__PURE__ */ import_react.default.createElement("div", { className: "search-row" }, /* @__PURE__ */ import_react.default.createElement("input", { value: query, onChange: (event) => setQuery(event.target.value), type: "search", minLength: "2", placeholder: "e.g. Monkey D. Luffy 014" }), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit" }, "Search"))), error && /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, error), /* @__PURE__ */ import_react.default.createElement("div", { className: "search-results" }, results.map((card) => /* @__PURE__ */ import_react.default.createElement("button", { className: "search-result", type: "button", key: card.id, onClick: () => onCardUrl(`${INDEX_BASE}${card.href}`) }, /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, card.name), /* @__PURE__ */ import_react.default.createElement("span", null, [card.setName, card.cardNumber, card.gradeLabel].filter(Boolean).join(" \xB7 "))))))));
   }
-  function ApiSettings({ credentials, setCredentials, rateLimit, setRateLimit }) {
-    const [key, setKey] = (0, import_react.useState)("");
-    const [secret, setSecret] = (0, import_react.useState)("");
-    (0, import_react.useEffect)(() => {
-      setKey(credentials?.renaissApiKey || "");
-      setSecret(credentials?.renaissApiSecret || "");
-    }, [credentials]);
-    const save = async () => {
-      if (!key.trim() || !secret.trim()) return setRateLimit("Enter both the API key and secret.");
-      const next = { renaissApiKey: key.trim(), renaissApiSecret: secret.trim() };
-      await chrome.storage.session.set(next);
-      setCredentials(next);
-      setRateLimit("Saved for this browser session only.");
-    };
-    const clear = async () => {
-      await chrome.storage.session.remove(CREDENTIAL_KEYS);
-      setCredentials({ renaissApiKey: "", renaissApiSecret: "" });
-      setRateLimit("Credentials cleared.");
-    };
-    return /* @__PURE__ */ import_react.default.createElement("details", { className: "settings" }, /* @__PURE__ */ import_react.default.createElement("summary", null, "API access"), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, "Authentication is required. Credentials are kept only for the current browser session and are never saved in the extension files."), /* @__PURE__ */ import_react.default.createElement("label", null, "API key"), /* @__PURE__ */ import_react.default.createElement("input", { value: key, onChange: (event) => setKey(event.target.value), type: "password", autoComplete: "off", placeholder: "rk_\u2026" }), /* @__PURE__ */ import_react.default.createElement("label", null, "API secret"), /* @__PURE__ */ import_react.default.createElement("input", { value: secret, onChange: (event) => setSecret(event.target.value), type: "password", autoComplete: "off", placeholder: "rsk_\u2026" }), /* @__PURE__ */ import_react.default.createElement("div", { className: "settings-actions" }, /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: save }, "Save"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", className: "secondary", onClick: clear }, "Clear")), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, rateLimit));
+  function ProxyStatus({ rateLimit }) {
+    return /* @__PURE__ */ import_react.default.createElement("details", { className: "settings" }, /* @__PURE__ */ import_react.default.createElement("summary", null, "Secure API connection"), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, "API credentials stay in the local proxy process and are never sent to the extension or Renaiss page."), /* @__PURE__ */ import_react.default.createElement("p", { className: "muted" }, rateLimit || "Proxy: http://127.0.0.1:8787"));
   }
   function formatUsd(cents) {
     return Number.isFinite(cents) ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100) : "\u2014";
