@@ -42,11 +42,11 @@ h3 { font-size: 12px; }
 .pokemon-dot { background: #ffcb5c; box-shadow: 0 0 12px rgba(255, 203, 92, .58); }
 .index-value { margin: 12px 0 2px; font-size: 28px; font-weight: 800; letter-spacing: -.04em; }
 .index-change { min-height: 17px; color: var(--muted); font-size: 11px; font-weight: 700; }
-.index-chart { height: 150px; margin-top: 12px; cursor: crosshair; }
+.index-chart { position: relative; height: 150px; margin-top: 12px; overflow: hidden; cursor: crosshair; }
 .index-chart svg { width: 100%; height: 100%; overflow: visible; }
 .index-hover-line { stroke: rgba(238, 245, 255, .38); stroke-width: 1; stroke-dasharray: 3 3; }
 .index-hover-dot { stroke: var(--bg); stroke-width: 2; }
-.index-tooltip { position: absolute; top: 106px; z-index: 1; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: rgba(9, 16, 29, .94); font-size: 10px; font-weight: 700; pointer-events: none; white-space: nowrap; }
+.index-tooltip { position: absolute; top: 8px; left: 50%; z-index: 1; max-width: calc(100% - 16px); padding: 5px 7px; overflow: hidden; transform: translateX(-50%); border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: rgba(9, 16, 29, .94); box-shadow: 0 6px 18px rgba(0, 0, 0, .28); font-size: 10px; font-weight: 700; text-overflow: ellipsis; pointer-events: none; white-space: nowrap; }
 .state-card, .panel, .hero-price, .stat-grid article { border: 1px solid var(--border); background: var(--panel); border-radius: 14px; }
 .state-card { min-height: 126px; display: grid; place-content: center; gap: 10px; text-align: center; padding: 22px; }
 .state-title { font-weight: 700; }

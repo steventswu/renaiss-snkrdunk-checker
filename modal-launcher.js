@@ -3,9 +3,15 @@
 // content-script implementation or a previous card's modal state.
 (() => {
   const host = globalThis.__renaissIndexModalHost || (globalThis.__renaissIndexModalHost = {});
+  const launchId = (host.launchId || 0) + 1;
+  const launchUrl = location.href;
+  const launchItemId = location.pathname.match(/^\/card\/([^/]+)\/?$/)?.[1] || '';
+  host.launchId = launchId;
 
   const getMetadata = () => {
-    const renaissItemId = location.pathname.match(/^\/card\/([^/]+)\/?$/)?.[1] || '';
+    const detailSelector = 'div.grid.grid-cols-\\[auto_1fr\\].gap-x-3.gap-y-1';
+    const currentItemId = location.pathname.match(/^\/card\/([^/]+)\/?$/)?.[1] || '';
+    const renaissItemId = launchItemId;
     const tokenLink = Array.from(document.querySelectorAll('a[href*="/nft/"]')).find((link) => {
       try {
         return new URL(link.href).pathname.split('/').pop() === renaissItemId;
@@ -14,15 +20,26 @@
       }
     });
     const renderedItemId = tokenLink ? new URL(tokenLink.href).pathname.split('/').pop() : '';
-    const ready = !renaissItemId || renderedItemId === renaissItemId;
+    // Bind this modal launch to the URL that opened it. If the SPA route moves,
+    // this launch must never reinterpret the next card as the previous request.
+    const routeReady = !renaissItemId || (currentItemId === renaissItemId && renderedItemId === renaissItemId);
+    // Renaiss keeps the previous Next.js route mounted but hidden during SPA
+    // navigation. Scope details to the same rendered card tree as its token link
+    // and ignore hidden grids, otherwise the old card overwrites the new values.
+    let detailsRoot = tokenLink;
+    while (detailsRoot && !detailsRoot.querySelector?.(detailSelector)) detailsRoot = detailsRoot.parentElement;
+    const detailGrids = routeReady && detailsRoot
+      ? Array.from(detailsRoot.querySelectorAll(detailSelector)).filter((grid) => grid.getClientRects().length > 0)
+      : [];
     const details = {};
-    if (ready) document.querySelectorAll('div.grid.grid-cols-\\[auto_1fr\\].gap-x-3.gap-y-1').forEach((grid) => {
+    detailGrids.forEach((grid) => {
       const children = Array.from(grid.children);
       for (let index = 0; index + 1 < children.length; index += 2) {
         const label = children[index].textContent.trim().toLowerCase();
         if (label) details[label] = children[index + 1].textContent.trim();
       }
     });
+    const ready = !renaissItemId || (routeReady && detailGrids.length > 0 && Boolean(details.serial));
     const image = ready && Array.from(document.querySelector('main')?.images || []).find((candidate) => {
       const source = candidate.currentSrc || candidate.src || '';
       return candidate.getClientRects().length > 0 && (source.includes('graded-cards-renders') || /card|slab/i.test(candidate.alt || ''));
@@ -45,16 +62,21 @@
   const waitForCurrentMetadata = async () => {
     const deadline = Date.now() + 10000;
     let metadata = getMetadata();
-    while (!metadata.ready && Date.now() < deadline) {
+    while (host.launchId === launchId && !metadata.ready && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       metadata = getMetadata();
     }
     return { ...metadata, timedOut: !metadata.ready };
   };
 
-  const close = () => {
+  const removeOverlay = () => {
     const overlay = document.getElementById('renaiss-index-companion-modal');
     overlay?.remove();
+  };
+
+  const close = () => {
+    if (host.launchId === launchId) host.launchId += 1;
+    removeOverlay();
   };
 
   if (host.messageListener) window.removeEventListener('message', host.messageListener);
@@ -65,11 +87,11 @@
     if (event.data.action === 'get-active-card-context') {
       const metadata = await waitForCurrentMetadata();
       const currentFrame = document.getElementById('renaiss-index-companion-frame');
-      if (currentFrame !== frame) return;
+      if (host.launchId !== launchId || currentFrame !== frame) return;
       frame.contentWindow.postMessage({
         source: 'renaiss-index-companion',
         action: 'active-card-context',
-        cardUrl: location.href,
+        cardUrl: launchUrl,
         metadata
       }, '*');
     }
@@ -78,7 +100,7 @@
 
   // Replacing instead of hiding is intentional: every open receives a new
   // React tree, a new card request, and the current SPA URL.
-  close();
+  removeOverlay();
   const overlay = document.createElement('div');
   overlay.id = 'renaiss-index-companion-modal';
   overlay.setAttribute('role', 'dialog');
@@ -91,7 +113,7 @@
   ].join(';');
   const frame = document.createElement('iframe');
   frame.id = 'renaiss-index-companion-frame';
-  frame.src = `${chrome.runtime.getURL('popup.html')}?cardUrl=${encodeURIComponent(location.href)}`;
+  frame.src = `${chrome.runtime.getURL('popup.html')}?cardUrl=${encodeURIComponent(launchUrl)}&launchId=${launchId}`;
   frame.title = 'Renaiss Index Companion';
   frame.style.cssText = [
     'width:min(1080px,100%)', 'height:min(900px,calc(100vh - 36px))',
