@@ -3,13 +3,13 @@
   "name": "Renaiss Index Companion",
   "version": "2.4.1",
   "description": "View Renaiss Index pricing, market history, and grade data while browsing Renaiss OS.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting"],
   "host_permissions": [
     "https://renaiss.xyz/*",
     "https://www.renaiss.xyz/*",
     "https://*.public.blob.vercel-storage.com/*",
     "https://index.renaissos.com/*",
-    "https://api.renaissos.com/*"
+    "http://127.0.0.1:8787/*"
   ],
   "action": {
     "default_title": "Open Renaiss Index Companion"

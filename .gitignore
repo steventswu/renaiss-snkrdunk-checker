@@ -1,4 +1,5 @@
 # Local credentials and developer configuration. Never commit real values.
+.DS_Store
 .env
 .env.*
 !.env.example
